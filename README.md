@@ -26,7 +26,7 @@ In this open source solution you will find references to the [neptune.ml](https:
 |:---:|:---:|:---:|
 |[solution 0](https://github.com/neptune-ml/open-solution-ship-detection/tree/solution-1)|XXX|XXX|
 |solution 1|XXX|0.855|
-|solution 2|XXX|0.868|
+|solution 2|XXX|0.875|
 
 # Solution Write-up 
 ## Pipeline diagram
