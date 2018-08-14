@@ -71,7 +71,7 @@ parameters:
   bce_weight: 1.0
 
   # Training schedule
-  epochs_nr: 100
+  epochs_nr: 10
   batch_size_train: 160
   batch_size_inference: 500
   lr: 0.0001
