@@ -28,40 +28,18 @@ from scipy import ndimage as ndi
 NEPTUNE_CONFIG_PATH = str(pathlib.Path(__file__).resolve().parents[1] / 'configs' / 'neptune.yaml')
 
 
-# Alex Martelli's 'Borg'
-# http://python-3-patterns-idioms-test.readthedocs.io/en/latest/Singleton.html
-class _Borg:
-    _shared_state = {}
+def read_params(ctx):
+    if ctx.params.__class__.__name__ == 'OfflineContextParams':
+        params = read_yaml().parameters
+    else:
+        params = ctx.params
+    return params
 
-    def __init__(self):
-        self.__dict__ = self._shared_state
 
-
-class NeptuneContext(_Borg):
-    def __init__(self, fallback_file=NEPTUNE_CONFIG_PATH):
-        _Borg.__init__(self)
-
-        self.ctx = neptune.Context()
-        self.fallback_file = fallback_file
-        self.params = self._read_params()
-        self.numeric_channel = neptune.ChannelType.NUMERIC
-        self.image_channel = neptune.ChannelType.IMAGE
-        self.text_channel = neptune.ChannelType.TEXT
-
-    def channel_send(self, *args, **kwargs):
-        self.ctx.channel_send(*args, **kwargs)
-
-    def _read_params(self):
-        if self.ctx.params.__class__.__name__ == 'OfflineContextParams':
-            params = self._read_yaml().parameters
-        else:
-            params = self.ctx.params
-        return params
-
-    def _read_yaml(self):
-        with open(self.fallback_file) as f:
-            config = yaml.load(f)
-        return AttrDict(config)
+def read_yaml(fallback_file=NEPTUNE_CONFIG_PATH):
+    with open(fallback_file) as f:
+        config = yaml.load(f)
+    return AttrDict(config)
 
 
 def init_logger():
@@ -104,8 +82,8 @@ def decompose(labeled):
 def create_submission(image_ids, predictions):
     output = []
     for image_id, mask in zip(image_ids, predictions):
-        for label_nr in range(1, mask.max()+1):
-            mask_label = mask==label_nr
+        for label_nr in range(1, mask.max() + 1):
+            mask_label = mask == label_nr
             rle_encoded = ' '.join(str(rle) for rle in run_length_encoding(mask_label))
             output.append([image_id, rle_encoded])
         if mask.max() == 0:
@@ -147,7 +125,7 @@ def get_overlayed_mask(image_annotation, size, labeled=False):
     if image_annotation['EncodedPixels'].any():
         for i, row in image_annotation.reset_index(drop=True).iterrows():
             if labeled:
-                label = i+1
+                label = i + 1
             else:
                 label = 1
             mask += label * run_length_decoding(row['EncodedPixels'], size)
@@ -201,7 +179,6 @@ def run_length_decoding(mask_rle, shape):
 
 
 def generate_metadata(train_images_dir, masks_overlayed_dir, test_images_dir, annotation_file_name):
-
     metadata = {}
     annotations = pd.read_csv(annotation_file_name)
     for filename in tqdm(os.listdir(train_images_dir)):

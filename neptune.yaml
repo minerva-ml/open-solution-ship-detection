@@ -22,16 +22,18 @@ exclude:
 
 parameters:
 # Data Paths
-  train_images_dir: /path/to/data
-  test_images_dir:  /path/to/data
-  meta_dir:         /path/to/data
-  experiment_dir:   /path/to/work/dir
+  train_images_dir:     /path/to/data
+  test_images_dir:      /path/to/data
+  meta_dir:             /path/to/data
+  annotation_file:      /path/to/data
+  masks_overlayed_dir:  /path/to/data
+  experiment_dir:       /path/to/data
 
-  # Execution
+# Execution
   overwrite: 0
   num_workers: 4
   num_threads: 4
-  kaggle_message: 'solution_1_small_unet_from_scratch'
+  kaggle_message: 'solution_1_small_unet_scratch_no_sampler'
   image_source: disk
   pin_memory: 1
   loader_mode: resize
@@ -69,7 +71,7 @@ parameters:
   bce_weight: 1.0
 
   # Training schedule
-  epochs_nr: 5
+  epochs_nr: 100
   batch_size_train: 160
   batch_size_inference: 500
   lr: 0.0001

@@ -1,11 +1,12 @@
 import os
 
 from attrdict import AttrDict
+from deepsense import neptune
 
-from .utils import NeptuneContext
+from .utils import read_params
 
-CTX = NeptuneContext()
-PARAMS = CTX.params
+CTX = neptune.Context()
+PARAMS = read_params(CTX)
 
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
@@ -16,7 +17,7 @@ X_COLUMNS = ['file_path_image']
 Y_COLUMNS = ['file_path_mask']
 DEPTH_COLUMN = ['z']
 ORIGINAL_SIZE = (768, 768)
-EXCLUDED_FILENAMES = ['6384c3e78.jpg',]
+EXCLUDED_FILENAMES = ['6384c3e78.jpg', ]
 
 GLOBAL_CONFIG = {'exp_root': PARAMS.experiment_dir,
                  'num_workers': PARAMS.num_workers,

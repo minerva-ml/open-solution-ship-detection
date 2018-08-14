@@ -3,16 +3,17 @@ import shutil
 
 import pandas as pd
 
+from deepsense import neptune
 from .metrics import f_beta_metric
 from . import pipeline_config as cfg
 from .pipelines import PIPELINES
-from .utils import NeptuneContext, init_logger, read_gt_subset, create_submission, \
-    generate_metadata, set_seed, clean_memory, generate_data_frame_chunks
+from .utils import init_logger, read_gt_subset, create_submission, generate_metadata, set_seed, \
+    generate_data_frame_chunks, read_params
 from .preparation import train_valid_split, overlay_masks
 
 LOGGER = init_logger()
-CTX = NeptuneContext()
-PARAMS = CTX.params
+CTX = neptune.Context()
+PARAMS = read_params(CTX)
 set_seed(cfg.SEED)
 
 
@@ -67,7 +68,7 @@ def train(pipeline_name, dev_mode):
         meta_train_split = meta_train_split.sample(PARAMS.dev_mode_size, random_state=cfg.SEED)
         meta_valid_split = meta_valid_split.sample(int(PARAMS.dev_mode_size / 2), random_state=cfg.SEED)
 
-    data = {'input': {'meta': meta_train_split,},
+    data = {'input': {'meta': meta_train_split, },
             'callback_input': {'meta_valid': meta_valid_split}
             }
 
@@ -91,7 +92,7 @@ def evaluate(pipeline_name, dev_mode, chunk_size):
 
     pipeline = PIPELINES[pipeline_name]['inference'](config=cfg.SOLUTION_CONFIG)
     prediction = generate_submission(meta_valid_split, pipeline, chunk_size)
-    gt = read_gt_subset(PARAMS.annotation_file, meta_valid_split[cfg.ID_COLUMNS[0]]+'.jpg')
+    gt = read_gt_subset(PARAMS.annotation_file, meta_valid_split[cfg.ID_COLUMNS[0]] + '.jpg')
     f2_score = f_beta_metric(gt, prediction)
     LOGGER.info('F2 score on validation is {}'.format(f2_score))
     CTX.channel_send('f2', 0, f2_score)
@@ -135,7 +136,7 @@ def generate_submission(meta_data, pipeline, chunk_size):
 
 def _generate_submission(meta_data, pipeline):
     prediction = _generate_prediction(meta_data, pipeline)
-    submission = create_submission(meta_data[cfg.ID_COLUMNS[0]]+'.jpg', prediction)
+    submission = create_submission(meta_data[cfg.ID_COLUMNS[0]] + '.jpg', prediction)
     return submission
 
 
@@ -143,7 +144,7 @@ def _generate_submission_in_chunks(meta_data, pipeline, chunk_size):
     submissions = []
     for meta_chunk in generate_data_frame_chunks(meta_data, chunk_size):
         prediction_chunk = _generate_prediction(meta_chunk, pipeline)
-        submission_chunk = create_submission(meta_chunk[cfg.ID_COLUMNS[0]]+'.jpg', prediction_chunk)
+        submission_chunk = create_submission(meta_chunk[cfg.ID_COLUMNS[0]] + '.jpg', prediction_chunk)
         submissions.append(submission_chunk)
     submission = pd.concat(submissions)
     return submission
