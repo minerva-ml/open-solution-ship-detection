@@ -22,12 +22,21 @@ exclude:
 
 parameters:
 # Data Paths
+<<<<<<< HEAD
   train_images_dir:     /path/to/data
   test_images_dir:      /path/to/data
   meta_dir:             /path/to/data
   annotation_file:      /path/to/data
   masks_overlayed_dir:  /path/to/data
   experiment_dir:       /path/to/data
+=======
+  train_images_dir: /path/to/data
+  test_images_dir:  /path/to/data
+  meta_dir:         /path/to/data
+  annotation_file:  /path/to/data
+  masks_overlayed_dir: /path/to/data 
+  experiment_dir:   /path/to/work/dir
+>>>>>>> bb0d9226b0ee3cf24ce68f4f809c17dee4176231
 
 # Execution
   overwrite: 0
