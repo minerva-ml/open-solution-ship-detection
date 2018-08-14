@@ -38,8 +38,8 @@ def compute_ious(gt, predictions):
 
 
 def compute_precision_at(ious, threshold):
-    mx1 = np.max(ious, axis=0)
-    mx2 = np.max(ious, axis=1)
+    mx1 = np.max(ious, axis=1)
+    mx2 = np.max(ious, axis=0)
     tp = np.sum(mx2 >= threshold)
     fp = np.sum(mx2 < threshold)
     fn = np.sum(mx1 < threshold)
@@ -108,8 +108,8 @@ def check_ids(gt, prediction):
 
 
 def compute_f_beta_at(ious, threshold, beta):
-    mx1 = np.max(ious, axis=0)
-    mx2 = np.max(ious, axis=1)
+    mx1 = np.max(ious, axis=1)
+    mx2 = np.max(ious, axis=0)
     tp = np.sum(mx2 >= threshold)
     fp = np.sum(mx2 < threshold)
     fn = np.sum(mx1 < threshold)
