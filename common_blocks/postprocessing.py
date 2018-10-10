@@ -2,7 +2,7 @@ import numpy as np
 from scipy import ndimage as ndi
 from skimage.transform import resize
 
-from .utils import get_crop_pad_sequence
+from common_blocks.utils.misc import get_crop_pad_sequence
 
 
 def resize_image(image, target_size):
@@ -41,3 +41,8 @@ def crop_image(image, target_size):
 def binarize(image, threshold):
     image_binarized = (image[1, :, :] > threshold).astype(np.uint8)
     return image_binarized
+
+
+def label(mask):
+    labeled, nr_true = ndi.label(mask)
+    return labeled

@@ -4,8 +4,9 @@ import numpy as np
 from tqdm import tqdm
 from pycocotools import mask as cocomask
 
-from .utils import get_segmentations, get_overlayed_mask
-from .pipeline_config import ORIGINAL_SIZE
+from common_blocks.utils.masks import get_segmentations, get_overlayed_mask
+
+ORIGINAL_SIZE = (768, 768)
 
 
 def iou(gt, pred):
@@ -53,7 +54,7 @@ def compute_eval_metric_per_image(gt, predictions, metric_to_average='precision'
         metric_function = compute_precision_at
     elif metric_to_average[0] == 'f':
         beta = float(metric_to_average[1:])
-        metric_function = partial(compute_f_beta_at, beta = beta)
+        metric_function = partial(compute_f_beta_at, beta=beta)
     else:
         raise NotImplementedError
     metric_per_image = [metric_function(ious, th) for th in thresholds]
@@ -76,18 +77,6 @@ def intersection_over_union_thresholds(y_true, y_pred):
     return np.mean(iouts)
 
 
-def old_f_beta_metric(y_true, y_pred, beta=2, type="mean"):
-    f_betas = []
-    for y_t, y_p in tqdm(list(zip(y_true, y_pred))):
-        f_betas.append(compute_eval_metric_per_image(y_t, y_p, "f{}".format(beta)))
-    if type=='mean':
-        return np.mean(f_betas)
-    elif type=='per_image':
-        return f_betas
-    else:
-        return NotImplementedError
-
-
 def f_beta_metric(gt, prediction, beta=2):
     f_betas = []
     check_ids(gt, prediction)
@@ -101,16 +90,16 @@ def f_beta_metric(gt, prediction, beta=2):
 def check_ids(gt, prediction):
     gt_ids = set(gt['ImageId'].unique())
     prediction_ids = set(prediction['ImageId'].unique())
-    if gt_ids-prediction_ids != set():
+    if gt_ids - prediction_ids != set():
         raise ValueError('Predictions for some images are missing')
     elif prediction_ids - gt_ids != set():
         raise ValueError('Prediction calculated for too many images')
 
 
 def compute_f_beta_at(ious, threshold, beta):
-    mx1 = np.max(ious, axis=1)
-    mx2 = np.max(ious, axis=0)
+    mx1 = np.max(ious, axis=0)
+    mx2 = np.max(ious, axis=1)
     tp = np.sum(mx2 >= threshold)
     fp = np.sum(mx2 < threshold)
     fn = np.sum(mx1 < threshold)
-    return (1 + beta**2) * tp / ((1 + beta**2) * tp + (beta**2) * fn + fp)
+    return (1 + beta ** 2) * tp / ((1 + beta ** 2) * tp + (beta ** 2) * fn + fp)

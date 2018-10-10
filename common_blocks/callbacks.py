@@ -1,13 +1,13 @@
-from functools import partial
 import os
+from functools import partial
 from datetime import datetime, timedelta
 
 import numpy as np
 import torch
 from PIL import Image
-from deepsense import neptune
+import neptune
 from torch.autograd import Variable
-from torch.optim.lr_scheduler import ExponentialLR
+from torch.optim.lr_scheduler import ExponentialLR, ReduceLROnPlateau
 from tempfile import TemporaryDirectory
 
 from steppy.base import Step, IdentityOperation
@@ -15,13 +15,16 @@ from steppy.adapter import Adapter, E
 from toolkit.pytorch_transformers.utils import Averager, persist_torch_model
 from toolkit.pytorch_transformers.validation import score_model
 
-from .utils import get_logger, sigmoid, softmax, make_apply_transformer, read_gt_subset, \
-    get_list_of_image_predictions, label, create_submission
-from .metrics import f_beta_metric
-from .pipeline_config import ORIGINAL_SIZE, SOLUTION_CONFIG, ID_COLUMNS
-from .postprocessing import crop_image, resize_image, binarize
+from common_blocks.utils.misc import get_logger, sigmoid, softmax, make_apply_transformer, get_list_of_image_predictions
+from common_blocks.utils.io import read_masks
+from .metrics import intersection_over_union_thresholds
+from .postprocessing import crop_image, resize_image, binarize, label
 
 logger = get_logger()
+
+Y_COLUMN = 'file_path_mask'
+ORIGINAL_SIZE = (768, 768)
+THRESHOLD = 0.5
 
 
 class Callback:
@@ -158,63 +161,6 @@ class TrainingMonitor(Callback):
         self.batch_id += 1
 
 
-class ValidationMonitor(Callback):
-    def __init__(self, epoch_every=None, batch_every=None, **kwargs):
-        super().__init__()
-        if epoch_every == 0:
-            self.epoch_every = False
-        else:
-            self.epoch_every = epoch_every
-        if batch_every == 0:
-            self.batch_every = False
-        else:
-            self.batch_every = batch_every
-
-    def on_epoch_end(self, *args, **kwargs):
-        if self.epoch_every and ((self.epoch_id % self.epoch_every) == 0):
-            self.model.eval()
-            val_loss = self.get_validation_loss()
-            self.model.train()
-            for name, loss in val_loss.items():
-                loss = loss.data.cpu().numpy()[0]
-                logger.info('epoch {0} validation {1}:     {2:.5f}'.format(self.epoch_id, name, loss))
-        self.epoch_id += 1
-
-
-class EarlyStopping(Callback):
-    def __init__(self, patience, minimize=True):
-        super().__init__()
-        self.patience = patience
-        self.minimize = minimize
-        self.best_score = None
-        self.epoch_since_best = 0
-        self._training_break = False
-
-    def on_epoch_end(self, *args, **kwargs):
-        self.model.eval()
-        val_loss = self.get_validation_loss()
-        loss_sum = val_loss['sum']
-        loss_sum = loss_sum.data.cpu().numpy()[0]
-
-        self.model.train()
-
-        if not self.best_score:
-            self.best_score = loss_sum
-
-        if (self.minimize and loss_sum < self.best_score) or (not self.minimize and loss_sum > self.best_score):
-            self.best_score = loss_sum
-            self.epoch_since_best = 0
-        else:
-            self.epoch_since_best += 1
-
-        if self.epoch_since_best > self.patience:
-            self._training_break = True
-        self.epoch_id += 1
-
-    def training_break(self, *args, **kwargs):
-        return self._training_break
-
-
 class ExponentialLRScheduler(Callback):
     def __init__(self, gamma, epoch_every=1, batch_every=None):
         super().__init__()
@@ -255,86 +201,83 @@ class ExponentialLRScheduler(Callback):
         self.batch_id += 1
 
 
-class ModelCheckpoint(Callback):
-    def __init__(self, filepath, epoch_every=1, minimize=True):
+class ReduceLROnPlateauScheduler(Callback):
+    def __init__(self, metric_name, minimize, reduce_factor, reduce_patience, min_lr):
         super().__init__()
-        self.filepath = filepath
+        self.ctx = neptune.Context()
+        self.ctx.channel_reset('Learning Rate')
+        self.metric_name = metric_name
         self.minimize = minimize
-        self.best_score = None
+        self.reduce_factor = reduce_factor
+        self.reduce_patience = reduce_patience
+        self.min_lr = min_lr
 
-        if epoch_every == 0:
-            self.epoch_every = False
-        else:
-            self.epoch_every = epoch_every
+    def set_params(self, transformer, validation_datagen, *args, **kwargs):
+        super().set_params(transformer, validation_datagen)
+        self.validation_datagen = validation_datagen
+        self.model = transformer.model
+        self.optimizer = transformer.optimizer
+        self.loss_function = transformer.loss_function
+        self.lr_scheduler = ReduceLROnPlateau(optimizer=self.optimizer,
+                                              mode='min' if self.minimize else 'max',
+                                              factor=self.reduce_factor,
+                                              patience=self.reduce_patience,
+                                              min_lr=self.min_lr)
 
     def on_train_begin(self, *args, **kwargs):
         self.epoch_id = 0
         self.batch_id = 0
-        os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
 
     def on_epoch_end(self, *args, **kwargs):
-        if self.epoch_every and ((self.epoch_id % self.epoch_every) == 0):
-            self.model.eval()
-            val_loss = self.get_validation_loss()
-            loss_sum = val_loss['sum']
-            loss_sum = loss_sum.data.cpu().numpy()[0]
+        self.model.eval()
+        val_loss = self.get_validation_loss()
+        metric = val_loss[self.metric_name]
+        metric = metric.data.cpu().numpy()[0]
+        self.model.train()
 
-            self.model.train()
-
-            if self.best_score is None:
-                self.best_score = loss_sum
-
-            if (self.minimize and loss_sum < self.best_score) or (not self.minimize and loss_sum > self.best_score) or (
-                    self.epoch_id == 0):
-                self.best_score = loss_sum
-                persist_torch_model(self.model, self.filepath)
-                logger.info('epoch {0} model saved to {1}'.format(self.epoch_id, self.filepath))
+        self.lr_scheduler.step(metrics=metric, epoch=self.epoch_id)
+        logger.info('epoch {0} current lr: {1}'.format(self.epoch_id + 1,
+                                                       self.optimizer.state_dict()['param_groups'][0]['lr']))
+        self.ctx.channel_send('Learning Rate', x=self.epoch_id,
+                              y=self.optimizer.state_dict()['param_groups'][0]['lr'])
 
         self.epoch_id += 1
 
 
-class NeptuneMonitor(Callback):
-    def __init__(self, model_name):
+class InitialLearningRateFinder(Callback):
+    def __init__(self, min_lr=1e-8, multipy_factor=1.05, add_factor=0.0):
         super().__init__()
-        self.model_name = model_name
         self.ctx = neptune.Context()
-        self.epoch_loss_averager = Averager()
+        self.ctx.channel_reset('Learning Rate Finder')
+        self.min_lr = min_lr
+        self.multipy_factor = multipy_factor
+        self.add_factor = add_factor
+
+    def set_params(self, transformer, validation_datagen, *args, **kwargs):
+        super().set_params(transformer, validation_datagen)
+        self.validation_datagen = validation_datagen
+        self.model = transformer.model
+        self.optimizer = transformer.optimizer
+        self.loss_function = transformer.loss_function
 
     def on_train_begin(self, *args, **kwargs):
-        self.epoch_loss_averagers = {}
         self.epoch_id = 0
         self.batch_id = 0
+
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = self.min_lr
 
     def on_batch_end(self, metrics, *args, **kwargs):
         for name, loss in metrics.items():
             loss = loss.data.cpu().numpy()[0]
+        current_lr = self.optimizer.state_dict()['param_groups'][0]['lr']
+        logger.info('Learning Rate {} Loss {})'.format(current_lr, loss))
+        self.ctx.channel_send('Learning Rate Finder', x=self.batch_id, y=current_lr)
+        self.ctx.channel_send('Loss', x=self.batch_id, y=loss)
 
-            if name in self.epoch_loss_averagers.keys():
-                self.epoch_loss_averagers[name].send(loss)
-            else:
-                self.epoch_loss_averagers[name] = Averager()
-                self.epoch_loss_averagers[name].send(loss)
-
-            self.ctx.channel_send('{} batch {} loss'.format(self.model_name, name), x=self.batch_id, y=loss)
-
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = current_lr * self.multipy_factor + self.add_factor
         self.batch_id += 1
-
-    def on_epoch_end(self, *args, **kwargs):
-        self._send_numeric_channels()
-        self.epoch_id += 1
-
-    def _send_numeric_channels(self, *args, **kwargs):
-        for name, averager in self.epoch_loss_averagers.items():
-            epoch_avg_loss = averager.value
-            averager.reset()
-            self.ctx.channel_send('{} epoch {} loss'.format(self.model_name, name), x=self.epoch_id, y=epoch_avg_loss)
-
-        self.model.eval()
-        val_loss = self.get_validation_loss()
-        self.model.train()
-        for name, loss in val_loss.items():
-            loss = loss.data.cpu().numpy()[0]
-            self.ctx.channel_send('{} epoch_val {} loss'.format(self.model_name, name), x=self.epoch_id, y=loss)
 
 
 class ExperimentTiming(Callback):
@@ -386,88 +329,126 @@ class ExperimentTiming(Callback):
         self.batch_start = datetime.now()
 
 
-class ReduceLROnPlateau(Callback):  # thank you keras
-    def __init__(self):
+class NeptuneMonitor(Callback):
+    def __init__(self, image_nr, image_resize, image_every, model_name):
         super().__init__()
-        pass
-
-
-class NeptuneMonitorSegmentation(NeptuneMonitor):
-    def __init__(self, image_nr, image_resize, model_name):
-        super().__init__(model_name)
-        self.image_nr = image_nr
+        self.model_name = model_name
+        self.ctx = neptune.Context()
+        self.epoch_loss_averager = Averager()
         self.image_resize = image_resize
+        self.image_every = image_every
+        self.image_nr = image_nr
+
+    def on_train_begin(self, *args, **kwargs):
+        self.epoch_loss_averagers = {}
+        self.epoch_id = 0
+        self.batch_id = 0
+
+    def on_batch_end(self, metrics, *args, **kwargs):
+        for name, loss in metrics.items():
+            loss = loss.data.cpu().numpy()[0]
+
+            if name in self.epoch_loss_averagers.keys():
+                self.epoch_loss_averagers[name].send(loss)
+            else:
+                self.epoch_loss_averagers[name] = Averager()
+                self.epoch_loss_averagers[name].send(loss)
+
+            self.ctx.channel_send('{} batch {} loss'.format(self.model_name, name), x=self.batch_id, y=loss)
+
+        self.batch_id += 1
 
     def on_epoch_end(self, *args, **kwargs):
         self._send_numeric_channels()
-        # self._send_image_channels()
+        if self.image_every is not None and self.epoch_id % self.image_every == 0:
+            self._send_image_channels()
         self.epoch_id += 1
+
+    def _send_numeric_channels(self, *args, **kwargs):
+        for name, averager in self.epoch_loss_averagers.items():
+            epoch_avg_loss = averager.value
+            averager.reset()
+            self.ctx.channel_send('{} epoch {} loss'.format(self.model_name, name), x=self.epoch_id, y=epoch_avg_loss)
+
+        self.model.eval()
+        val_loss = self.get_validation_loss()
+        self.model.train()
+        for name, loss in val_loss.items():
+            loss = loss.data.cpu().numpy()[0]
+            self.ctx.channel_send('{} epoch_val {} loss'.format(self.model_name, name), x=self.epoch_id, y=loss)
 
     def _send_image_channels(self):
         self.model.eval()
-        pred_masks = self.get_prediction_masks()
+        image_triplets = self._get_image_triplets()
+        if self.image_nr is not None:
+            image_triplets = image_triplets[:self.image_nr]
         self.model.train()
 
-        for name, pred_mask in pred_masks.items():
-            for i, image_duplet in enumerate(pred_mask):
-                h, w = image_duplet.shape[1:]
-                image_glued = np.zeros((h, 2 * w + 10))
+        for i, (raw, pred, truth) in enumerate(image_triplets):
+            h, w, _ = raw.shape
+            image_glued = np.zeros((h, 3 * w + 20, 3))
+            image_glued[:, :w, :] = raw
+            image_glued[:, (w + 10):(2 * w + 10), :] = pred
+            image_glued[:, (2 * w + 20):, :] = truth
 
-                image_glued[:, :w] = image_duplet[0, :, :]
-                image_glued[:, (w + 10):] = image_duplet[1, :, :]
+            pill_image = Image.fromarray((image_glued * 255.).astype(np.uint8))
+            h_, w_, _ = image_glued.shape
+            pill_image = pill_image.resize((int(self.image_resize * w_), int(self.image_resize * h_)),
+                                           Image.ANTIALIAS)
 
-                pill_image = Image.fromarray((image_glued * 255.).astype(np.uint8))
-                h_, w_ = image_glued.shape
-                pill_image = pill_image.resize((int(self.image_resize * w_), int(self.image_resize * h_)),
-                                               Image.ANTIALIAS)
+            self.ctx.channel_send('{} predictions'.format(self.model_name), neptune.Image(
+                name='epoch{}_batch{}_idx{}'.format(self.epoch_id, self.batch_id, i),
+                description="image, prediction, ground truth",
+                data=pill_image))
 
-                self.ctx.channel_send('{} {}'.format(self.model_name, name), neptune.Image(
-                    name='epoch{}_batch{}_idx{}'.format(self.epoch_id, self.batch_id, i),
-                    description="true and prediction masks",
-                    data=pill_image))
-
-                if i == self.image_nr:
-                    break
-
-    def get_prediction_masks(self):
-        prediction_masks = {}
+    def _get_image_triplets(self):
+        image_triplets = []
         batch_gen, steps = self.validation_datagen
         for batch_id, data in enumerate(batch_gen):
-            if len(data) != len(self.output_names) + 1:
-                raise ValueError('incorrect targets provided')
-            X = data[0]
-            targets_tensors = data[1:]
+            predictions, targets_tensors = self._get_predictions_targets(data)
 
-            if torch.cuda.is_available():
-                X = Variable(X).cuda()
-            else:
-                X = Variable(X)
+            raw_images = data[0].numpy()
+            ground_truth_masks = targets_tensors[0].cpu().numpy()
 
-            outputs_batch = self.model(X)
-            if len(outputs_batch) == len(self.output_names):
-                for name, output, target in zip(self.output_names, outputs_batch, targets_tensors):
-                    prediction = sigmoid(np.squeeze(output.data.cpu().numpy(), axis=1))
-                    ground_truth = np.squeeze(target.cpu().numpy(), axis=1)
-                    prediction_masks[name] = np.stack([prediction, ground_truth], axis=1)
-            else:
-                for name, target in zip(self.output_names, targets_tensors):
-                    prediction = sigmoid(np.squeeze(outputs_batch.data.cpu().numpy(), axis=1))
-                    ground_truth = np.squeeze(target.cpu().numpy(), axis=1)
-                    prediction_masks[name] = np.stack([prediction, ground_truth], axis=1)
+            for image, prediction, target in zip(raw_images, predictions, ground_truth_masks):
+                raw = denormalize(image).transpose(1, 2, 0)
+                pred = np.tile(prediction[1, :, :], (3, 1, 1)).transpose(1, 2, 0)
+                truth = np.tile(target[1, :, :], (3, 1, 1)).transpose(1, 2, 0)
+                image_triplets.append((raw, pred, truth))
             break
-        return prediction_masks
+        return image_triplets
+
+    def _get_predictions_targets(self, data):
+        X = data[0]
+        targets_tensors = data[1:]
+
+        if torch.cuda.is_available():
+            X = Variable(X, volatile=True).cuda()
+        else:
+            X = Variable(X, volatile=True)
+
+        predictions = sigmoid(self.model(X).data.cpu().numpy())
+        return predictions, targets_tensors
 
 
-class ValidationMonitorSegmentation(ValidationMonitor):
-    def __init__(self, data_dir, annotation_file, loader_mode, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class ValidationMonitor(Callback):
+    def __init__(self, data_dir, loader_mode, epoch_every=None, batch_every=None):
+        super().__init__()
+        if epoch_every == 0:
+            self.epoch_every = False
+        else:
+            self.epoch_every = epoch_every
+        if batch_every == 0:
+            self.batch_every = False
+        else:
+            self.batch_every = batch_every
+
         self.data_dir = data_dir
         self.validation_pipeline = postprocessing_pipeline_simplified
         self.loader_mode = loader_mode
         self.meta_valid = None
         self.y_true = None
         self.activation_func = None
-        self.annotation_file_path = annotation_file
 
     def set_params(self, transformer, validation_datagen, meta_valid=None, *args, **kwargs):
         self.model = transformer.model
@@ -476,25 +457,36 @@ class ValidationMonitorSegmentation(ValidationMonitor):
         self.output_names = transformer.output_names
         self.validation_datagen = validation_datagen
         self.meta_valid = meta_valid
-        self.y_true = read_gt_subset(self.annotation_file_path, meta_valid[ID_COLUMNS[0]]+'.jpg')
+        self.y_true = read_masks(self.meta_valid[Y_COLUMN].values)
         self.activation_func = transformer.activation_func
         self.transformer = transformer
 
     def get_validation_loss(self):
         return self._get_validation_loss()
 
+    def on_epoch_end(self, *args, **kwargs):
+        if self.epoch_every and ((self.epoch_id % self.epoch_every) == 0):
+            self.model.eval()
+            val_loss = self.get_validation_loss()
+            self.model.train()
+            for name, loss in val_loss.items():
+                loss = loss.data.cpu().numpy()[0]
+                logger.info('epoch {0} validation {1}:     {2:.5f}'.format(self.epoch_id, name, loss))
+        self.epoch_id += 1
+
     def _get_validation_loss(self):
         output, epoch_loss = self._transform()
-        y_pred = self._generate_prediction(output)
 
         logger.info('Calculating F2 Score')
-        f2_score = f_beta_metric(self.y_true, y_pred)
+        y_pred = self._generate_prediction(output)
+        f2_score = intersection_over_union_thresholds(self.y_true, y_pred)
         logger.info('F2 score on validation is {}'.format(f2_score))
 
         if not self.transformer.validation_loss:
             self.transformer.validation_loss = {}
         self.transformer.validation_loss.setdefault(self.epoch_id, {'sum': epoch_loss,
-                                                                    'f2': Variable(torch.Tensor([f2_score])), })
+                                                                    'f2': Variable(torch.Tensor([f2_score])),
+                                                                    })
         return self.transformer.validation_loss[self.epoch_id]
 
     def _transform(self):
@@ -503,21 +495,8 @@ class ValidationMonitorSegmentation(ValidationMonitor):
         partial_batch_losses = []
         outputs = {}
         for batch_id, data in enumerate(batch_gen):
-            X = data[0]
-            targets_tensors = data[1:]
+            targets_var, outputs_batch = self._get_targets_and_output(data)
 
-            if torch.cuda.is_available():
-                X = Variable(X, volatile=True).cuda()
-                targets_var = []
-                for target_tensor in targets_tensors:
-                    targets_var.append(Variable(target_tensor, volatile=True).cuda())
-            else:
-                X = Variable(X, volatile=True)
-                targets_var = []
-                for target_tensor in targets_tensors:
-                    targets_var.append(Variable(target_tensor, volatile=True))
-
-            outputs_batch = self.model(X)
             if len(self.output_names) == 1:
                 for (name, loss_function_one, weight), target in zip(self.loss_function, targets_var):
                     loss_sum = loss_function_one(outputs_batch, target) * weight
@@ -549,23 +528,54 @@ class ValidationMonitorSegmentation(ValidationMonitor):
 
         return outputs, average_losses
 
+    def _get_targets_and_output(self, data):
+        X = data[0]
+        targets_tensors = data[1:]
+
+        if torch.cuda.is_available():
+            X = Variable(X, volatile=True).cuda()
+            targets_var = []
+            for target_tensor in targets_tensors:
+                targets_var.append(Variable(target_tensor, volatile=True).cuda())
+        else:
+            X = Variable(X, volatile=True)
+            targets_var = []
+            for target_tensor in targets_tensors:
+                targets_var.append(Variable(target_tensor, volatile=True))
+        outputs_batch = self.model(X)
+
+        return targets_var, outputs_batch
+
     def _generate_prediction(self, outputs):
         data = {'callback_input': {'meta': self.meta_valid,
                                    'meta_valid': None,
                                    },
-                'unet_output': {**outputs}
+                'network_output': {**outputs}
                 }
         with TemporaryDirectory() as cache_dirpath:
             pipeline = self.validation_pipeline(cache_dirpath, self.loader_mode)
             output = pipeline.transform(data)
-        y_pred = output['y_pred']
-        return create_submission(self.meta_valid[ID_COLUMNS[0]]+'.jpg', y_pred)
+        y_pred = output['labeled_images']
+        return y_pred
 
 
-class ModelCheckpointSegmentation(ModelCheckpoint):
-    def __init__(self, metric_name='sum', *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class ModelCheckpoint(Callback):
+    def __init__(self, filepath, metric_name='sum', epoch_every=1, minimize=True):
+        self.filepath = filepath
+        self.minimize = minimize
+        self.best_score = None
+
+        if epoch_every == 0:
+            self.epoch_every = False
+        else:
+            self.epoch_every = epoch_every
+
         self.metric_name = metric_name
+
+    def on_train_begin(self, *args, **kwargs):
+        self.epoch_id = 0
+        self.batch_id = 0
+        os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
 
     def on_epoch_end(self, *args, **kwargs):
         if self.epoch_every and ((self.epoch_id % self.epoch_every) == 0):
@@ -588,10 +598,18 @@ class ModelCheckpointSegmentation(ModelCheckpoint):
         self.epoch_id += 1
 
 
-class EarlyStoppingSegmentation(EarlyStopping):
-    def __init__(self, metric_name='sum', *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class EarlyStopping(Callback):
+    def __init__(self, metric_name='sum', patience=1000, minimize=True):
+        super().__init__()
+        self.patience = patience
+        self.minimize = minimize
+        self.best_score = None
+        self.epoch_since_best = 0
+        self._training_break = False
         self.metric_name = metric_name
+
+    def training_break(self, *args, **kwargs):
+        return self._training_break
 
     def on_epoch_end(self, *args, **kwargs):
         self.model.eval()
@@ -615,10 +633,14 @@ class EarlyStoppingSegmentation(EarlyStopping):
         self.epoch_id += 1
 
 
+def denormalize(x):
+    mean = np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
+    std = np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
+    return x * std + mean
+
+
 def postprocessing_pipeline_simplified(cache_dirpath, loader_mode):
-    if loader_mode == 'crop_and_pad':
-        size_adjustment_function = partial(crop_image, target_size=ORIGINAL_SIZE)
-    elif loader_mode == 'resize':
+    if loader_mode == 'resize':
         size_adjustment_function = partial(resize_image, target_size=ORIGINAL_SIZE)
     else:
         raise NotImplementedError
@@ -627,36 +649,28 @@ def postprocessing_pipeline_simplified(cache_dirpath, loader_mode):
                        transformer=make_apply_transformer(size_adjustment_function,
                                                           output_name='resized_images',
                                                           apply_on=['images']),
-                       input_data=['unet_output'],
-                       adapter=Adapter({'images': E('unet_output', 'mask_prediction'),
-                                        }),
-                       experiment_directory=cache_dirpath)
+                       input_data=['network_output'],
+                       adapter=Adapter({'images': E('network_output', 'mask_prediction'),
+                                        }))
 
     binarizer = Step(name='binarizer',
                      transformer=make_apply_transformer(
-                         partial(binarize, threshold=SOLUTION_CONFIG.thresholder.threshold_masks),
+                         partial(binarize, threshold=THRESHOLD),
                          output_name='binarized_images',
                          apply_on=['images']),
                      input_steps=[mask_resize],
                      adapter=Adapter({'images': E(mask_resize.name, 'resized_images'),
-                                      }),
-                     experiment_directory=cache_dirpath)
+                                      }))
 
     labeler = Step(name='labeler',
-                     transformer=make_apply_transformer(
-                         label,
-                         output_name='labeled_images',
-                         apply_on=['images']),
-                     input_steps=[binarizer],
-                     adapter=Adapter({'images': E(binarizer.name, 'binarized_images'),
-                                      }),
-                     experiment_directory=cache_dirpath)
-
-    output = Step(name='output',
-                  transformer=IdentityOperation(),
-                  input_steps=[labeler],
-                  adapter=Adapter({'y_pred': E(labeler.name, 'labeled_images'),
-                                   }),
-                  experiment_directory=cache_dirpath)
-
-    return output
+                   transformer=make_apply_transformer(
+                       label,
+                       output_name='labeled_images',
+                       apply_on=['images']),
+                   input_steps=[binarizer],
+                   adapter=Adapter({'images': E(binarizer.name, 'binarized_images'),
+                                    }))
+    labeler.set_mode_inference()
+    labeler.set_parameters_upstream({'experiment_directory': cache_dirpath,
+                                     'is_fittable': False})
+    return labeler

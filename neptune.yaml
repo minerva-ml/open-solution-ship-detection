@@ -1,4 +1,4 @@
-project: USERNAME/PROJECT_NAME
+#project: USERNAME/PROJECT
 
 name: airbus_ships_challenge
 tags: [solution-1]
@@ -11,82 +11,70 @@ metric:
 #pip-requirements-file: requirements.txt
 
 exclude:
-  - .git
-  - .idea
-  - .ipynb_checkpoints
-  - output
-  - imgs
-  - neptune.log
-  - offline_job.log
-  - notebooks
+- .git
+- .idea
+- .ipynb_checkpoints
+- output
+- imgs
+- neptune.log
+- offline_job.log
+- notebooks
 
 parameters:
-# Data Paths
-  train_images_dir:     /path/to/data
-  test_images_dir:      /path/to/data
-  meta_dir:             /path/to/data
-  annotation_file:      /path/to/data
-  masks_overlayed_dir:  /path/to/data
-  experiment_dir:       /path/to/data
 
-# Execution
+  # Data Paths
+  train_images_dir:     /PATH/TO/ships/data/train
+  test_images_dir:      /PATH/TO/ships/data/test
+  metadata_filepath:    /PATH/TO/ships/files/ships_metadata.csv
+  annotation_file:      /PATH/TO/ships/data/train_ship_segmentations.csv
+  masks_overlayed_dir:  /PATH/TO/ships/files/masks_overlayed
+
+  # Execution
   overwrite: 0
   num_workers: 4
   num_threads: 4
-  kaggle_message: 'solution_1_small_unet_scratch_no_sampler'
+  kaggle_message: 'solution_1'
   image_source: disk
   pin_memory: 1
   loader_mode: resize
+  resize_target_size: 256
   pad_method: symmetric
   target_format: 'joblib'
-  dev_mode_size: 1000
-  n_cv_splits: 10
-  shuffle: 1
+  dev_mode_size: 500
 
   # General parameters
-  image_h: 128
-  image_w: 128
+  image_h: 256
+  image_w: 256
   image_channels: 3
-  sample_size: 0
+  training_sampler_size: 2000
+  training_sampler_empty_fraction: 0.0
   evaluation_size: 10000
-  validation_size: 500
-  empty_fraction: 0.1
+  in_train_evaluation_size: 1000
   valid_empty_fraction: None
+  fine_tuning: 0
 
-  # U-Net parameters
-  unet_output_channels: 2
-  unet_activation: 'sigmoid'
-  encoder: from_scratch
-
-  # U-Net from scratch parameters
-  nr_unet_outputs: 1
-  n_filters: 8
-  conv_kernel: 3
-  pool_kernel: 3
-  pool_stride: 2
-  repeat_blocks: 3
-
-  # Loss
-  dice_weight: 5.0
-  bce_weight: 1.0
+  # Network parameters
+  network_output_channels: 2
+  network_activation: 'sigmoid'
+  architecture: UNetSeResNetXt
 
   # Training schedule
-  epochs_nr: 10
-  batch_size_train: 160
-  batch_size_inference: 500
-  lr: 0.0001
+  epochs_nr: 2
+  batch_size_train: 4
+  batch_size_inference: 4
+  lr: 0.0007
   momentum: 0.9
   gamma: 0.95
-  patience: 5
+  patience: 10
   validation_metric_name: 'f2'
   minimize_validation_metric: 0
+  reduce_factor: 0.5
+  reduce_patience: 5
+  min_lr: 0
 
   # Regularization
   use_batch_norm: 1
   l2_reg_conv: 0.0001
-  l2_reg_dense: 0.0
-  dropout_conv: 0.1
-  dropout_dense: 0.0
 
   # Postprocessing
   threshold_masks: 0.5
