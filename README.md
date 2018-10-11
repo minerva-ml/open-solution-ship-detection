@@ -3,9 +3,6 @@
 
 This is an open solution to the [Airbus Ship Detection Challenge](https://www.kaggle.com/c/airbus-ship-detection).
 
-## More competitions :sparkler:
-Check collection of [public projects :gift:](https://app.neptune.ml/-/explore), where you can find multiple Kaggle competitions with code, experiments and outputs.
-
 ## Our goals
 We are building entirely open solution to this competition. Specifically:
 1. **Learning from the process** - updates about new ideas, code and experiments is the best way to learn data science. Our activity is especially useful for people who wants to enter the competition, but lack appropriate experience.
@@ -27,9 +24,123 @@ In this open source solution you will find references to the [neptune.ml](https:
 
 | link to code | CV | LB |
 |:---:|:---:|:---:|
-|[solution 0](https://github.com/neptune-ml/open-solution-ship-detection/tree/solution-1)|XXX|XXX|
-|solution 1|XXX|0.855|
-|solution 2|XXX|0.875|
+|solution 1|0.541|0.573|
+
+## Start experimenting with ready-to-use code
+You can jump start your participation in the competition by using our starter pack. Installation instruction below will guide you through the setup.
+
+### Installation *(fast track)*
+1. Clone repository and install requirements (*use Python3.5*) `pip3 install -r requirements.txt`
+1. Register to the [neptune.ml](https://neptune.ml) _(if you wish to use it)_
+1. Run experiment based on U-Net:
+
+
+#### Cloud
+```bash
+neptune account login
+```
+
+Create project say Ships (SHIP)
+
+Go to `neptune.yaml` and change:
+
+```yaml
+project: USERNAME/PROJECT_NAME
+```
+to your username and project name
+
+Prepare metadata and overlayed target masks
+It only needs to be **done once**
+
+```bash
+neptune send --worker xs \
+--environment base-cpu-py3 \
+--config neptune.yaml \
+prepare_metadata.py
+
+```
+
+They will be saved in the
+
+```yaml
+  metadata_filepath: /output/metadata.csv
+  masks_overlayed_dir: /output/masks_overlayed
+```
+
+From now on we will load the metadata by changing the `neptune.yaml`
+
+```yaml
+  metadata_filepath: /input/metadata.csv
+  masks_overlayed_dir: /input/masks_overlayed
+```
+
+and adding the path to the experiment that generated metadata say SHIP-1 to every command `--input/metadata.csv`
+
+Let's train the model by running the `main.py`:
+
+```bash
+neptune send --worker m-2p100 \
+--environment pytorch-0.3.1-gpu-py3 \
+--config neptune.yaml \
+--input /SHIP-1/output/metadata.csv \
+--input /SHIP-1/output/masks_overlayed \
+main.py 
+
+```
+
+The model will be saved in the:
+
+```yaml
+  experiment_dir: /output/experiment
+```
+
+and the `submission.csv` will be saved in `/output/experiment/submission.csv`
+
+You can easily use models trained during one experiment in other experiments.
+For example when running evaluation we need to use the previous model folder in our experiment. We do that by:
+
+changing `main.py` 
+
+```python
+  CLONE_EXPERIMENT_DIR_FROM = '/SHIP-2/output/experiment'
+```
+
+and running the following command:
+
+
+```bash
+neptune send --worker m-2p100 \
+--environment pytorch-0.3.1-gpu-py3 \
+--config neptune.yaml \
+--input /SHIP-1/output/metadata.csv \
+--input /SHIP-1/output/masks_overlayed \
+--input /SHIP-2 \
+main.py
+```
+
+#### Local
+Login to neptune if you want to use it
+```bash
+neptune account login
+```
+
+Prepare metadata by running:
+
+```bash
+neptune run --config neptune.yaml prepare_metadata.py
+```
+
+Training and inference by running `main.py`:
+
+```bash
+neptune run --config neptune.yaml main.py
+```
+
+You can always run it with pure python :snake:
+
+```bash
+python main.py 
+```
 
 ## Get involved
 You are welcome to contribute your code and ideas to this open solution. To get started:
