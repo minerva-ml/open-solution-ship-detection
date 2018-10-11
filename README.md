@@ -24,7 +24,7 @@ In this open source solution you will find references to the [neptune.ml](https:
 
 | link to code | CV | LB |
 |:---:|:---:|:---:|
-|solution 0|0.779|0.520|
+|solution 1|0.541|0.573|
 
 ## Start experimenting with ready-to-use code
 You can jump start your participation in the competition by using our starter pack. Installation instruction below will guide you through the setup.
@@ -49,7 +49,7 @@ project: USERNAME/PROJECT_NAME
 ```
 to your username and project name
 
-Prepare metadata. 
+Prepare metadata and overlayed target masks
 It only needs to be **done once**
 
 ```bash
@@ -64,12 +64,14 @@ They will be saved in the
 
 ```yaml
   metadata_filepath: /output/metadata.csv
+  masks_overlayed_dir: /output/masks_overlayed
 ```
 
 From now on we will load the metadata by changing the `neptune.yaml`
 
 ```yaml
   metadata_filepath: /input/metadata.csv
+  masks_overlayed_dir: /input/masks_overlayed
 ```
 
 and adding the path to the experiment that generated metadata say SHIP-1 to every command `--input/metadata.csv`
@@ -81,6 +83,7 @@ neptune send --worker m-2p100 \
 --environment pytorch-0.3.1-gpu-py3 \
 --config neptune.yaml \
 --input /SHIP-1/output/metadata.csv \
+--input /SHIP-1/output/masks_overlayed \
 main.py 
 
 ```
@@ -110,6 +113,7 @@ neptune send --worker m-2p100 \
 --environment pytorch-0.3.1-gpu-py3 \
 --config neptune.yaml \
 --input /SHIP-1/output/metadata.csv \
+--input /SHIP-1/output/masks_overlayed \
 --input /SHIP-2 \
 main.py
 ```
