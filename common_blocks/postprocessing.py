@@ -1,4 +1,5 @@
 import numpy as np
+import cv2
 from scipy import ndimage as ndi
 from skimage.transform import resize
 
@@ -46,3 +47,18 @@ def binarize(image, threshold):
 def label(mask):
     labeled, nr_true = ndi.label(mask)
     return labeled
+
+
+def masks_to_bounding_boxes(labeled_mask):
+    if labeled_mask.max() == 0:
+        return labeled_mask
+    else:
+        img_box = np.zeros_like(labeled_mask)
+        for label_id in range(1, labeled_mask.max() + 1, 1):
+            label = np.where(labeled_mask == label_id, 1, 0).astype(np.uint8)
+            _, cnt, _ = cv2.findContours(label, 1, 2)
+            rect = cv2.minAreaRect(cnt[0])
+            box = cv2.boxPoints(rect)
+            box = np.int0(box)
+            cv2.drawContours(img_box, [box], 0, label_id, -1)
+        return img_box

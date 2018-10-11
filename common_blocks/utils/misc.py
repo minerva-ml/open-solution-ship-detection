@@ -13,6 +13,7 @@ import torch
 import matplotlib.pyplot as plt
 from attrdict import AttrDict
 from tqdm import tqdm
+from sklearn.model_selection import train_test_split
 from steppy.base import Step, BaseTransformer
 from steppy.utils import get_logger as get_steppy_logger
 import yaml
@@ -116,6 +117,27 @@ def get_number_of_ships(image_annotations):
         return len(image_annotations)
     else:
         return 0
+
+
+def train_test_split_with_empty_fraction(df, empty_fraction, test_size, shuffle=True, random_state=1234):
+    valid_empty_size = int(test_size * empty_fraction)
+    valid_non_empty_size = int(test_size * (1.0 - empty_fraction))
+    df_empty = df[df['is_not_empty'] == 0]
+    df_non_empty = df[df['is_not_empty'] == 1]
+
+    train_empty, valid_empty = train_test_split(df_empty,
+                                                test_size=valid_empty_size,
+                                                shuffle=shuffle,
+                                                random_state=random_state)
+    train_non_empty, valid_non_empty = train_test_split(df_non_empty,
+                                                        test_size=valid_non_empty_size,
+                                                        shuffle=shuffle,
+                                                        random_state=random_state)
+
+    train = pd.concat([train_empty, train_non_empty], axis=0)
+    valid = pd.concat([valid_empty, valid_non_empty], axis=0)
+
+    return train, valid
 
 
 def sigmoid(x):

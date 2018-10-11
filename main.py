@@ -5,7 +5,6 @@ import shutil
 from attrdict import AttrDict
 import neptune
 import pandas as pd
-from sklearn.model_selection import train_test_split
 from steppy.base import Step, IdentityOperation
 from steppy.adapter import Adapter, E
 
@@ -31,6 +30,7 @@ EXPERIMENT_DIR = '/output/experiment'
 CLONE_EXPERIMENT_DIR_FROM = ''  # When running eval in the cloud specify this as for example /input/SAL-14/output/experiment
 OVERWRITE_EXPERIMENT_DIR = False
 DEV_MODE = False
+USE_TTA = True
 
 if OVERWRITE_EXPERIMENT_DIR and os.path.isdir(EXPERIMENT_DIR):
     shutil.rmtree(EXPERIMENT_DIR)
@@ -46,7 +46,7 @@ else:
 
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
-CHUNK_SIZE = 500
+CHUNK_SIZE = 50
 SEED = 1234
 ID_COLUMN = 'id'
 IS_NOT_EMPTY_COLUMN = 'is_not_empty'
@@ -66,9 +66,9 @@ CONFIG = AttrDict({
                 'original_size': (768, 768),
                 },
     'meta_reader': {
-        'network': {'x_columns': x_columns,
-                    'y_columns': y_columns,
-                    },
+        'segmentation_network': {'x_columns': x_columns,
+                                 'y_columns': y_columns,
+                                 },
     },
     'loaders': {'resize': {'dataset_params': {'h': PARAMS.image_h,
                                               'w': PARAMS.image_w,
@@ -131,7 +131,7 @@ CONFIG = AttrDict({
                                },
                 },
     'model': {
-        'network': {
+        'segmentation_network': {
             'architecture_config': {'model_params': {'in_channels': PARAMS.image_channels,
                                                      'out_channels': PARAMS.network_output_channels,
                                                      'architecture': PARAMS.architecture,
@@ -151,7 +151,7 @@ CONFIG = AttrDict({
                                 'fine_tuning': PARAMS.fine_tuning,
                                 },
             'callbacks_config': {'model_checkpoint': {
-                'filepath': os.path.join(EXPERIMENT_DIR, 'checkpoints', 'network', 'best.torch'),
+                'filepath': os.path.join(EXPERIMENT_DIR, 'checkpoints', 'segmentation_network', 'best.torch'),
                 'epoch_every': 1,
                 'metric_name': PARAMS.validation_metric_name,
                 'minimize': PARAMS.minimize_validation_metric},
@@ -179,10 +179,9 @@ CONFIG = AttrDict({
             }
         },
     },
-    'tta_generator': {'flip_ud': False,
+    'tta_generator': {'flip_ud': True,
                       'flip_lr': True,
-                      'rotation': False,
-                      'color_shift_runs': 0},
+                      'rotation': True},
     'tta_aggregator': {'tta_inverse_transform': aug.test_time_augmentation_inverse_transform,
                        'method': PARAMS.tta_aggregation_method,
                        'nthreads': PARAMS.num_threads
@@ -201,24 +200,29 @@ CONFIG = AttrDict({
 #
 
 
-def network(config, suffix='', train_mode=True):
-    if train_mode:
-        preprocessing = pipelines.preprocessing_train(config, model_name='network', suffix=suffix)
-    else:
-        preprocessing = pipelines.preprocessing_inference(config, suffix=suffix)
+def train_segmentation_network(config):
+    preprocessing = pipelines.preprocessing_train(config, model_name='segmentation_network')
 
-    network = misc.FineTuneStep(name='network{}'.format(suffix),
-                                transformer=models.SegmentationModel(**config.model['network']),
-                                input_data=['callback_input'],
-                                input_steps=[preprocessing],
-                                adapter=Adapter({'datagen': E(preprocessing.name, 'datagen'),
-                                                 'validation_datagen': E(preprocessing.name, 'validation_datagen'),
-                                                 'meta_valid': E('callback_input', 'meta_valid'),
-                                                 }),
-                                is_fittable=True,
-                                force_fitting=True,
-                                fine_tuning=config.model.network.training_config.fine_tuning)
+    segmentation_network = misc.FineTuneStep(name='segmentation_network',
+                                             transformer=models.SegmentationModel(
+                                                 **config.model['segmentation_network']),
+                                             input_data=['callback_input'],
+                                             input_steps=[preprocessing],
+                                             adapter=Adapter({'datagen': E(preprocessing.name, 'datagen'),
+                                                              'validation_datagen': E(preprocessing.name,
+                                                                                      'validation_datagen'),
+                                                              'meta_valid': E('callback_input', 'meta_valid'),
+                                                              }))
 
+    segmentation_network.set_mode_train()
+    segmentation_network.set_parameters_upstream({'experiment_directory': config.execution.experiment_dir,
+                                                  })
+    segmentation_network.force_fitting = False
+    segmentation_network.fine_tuning = config.model.segmentation_network.training_config.fine_tuning
+    return segmentation_network
+
+
+def inference_pipeline(config):
     if config.general.loader_mode == 'resize_and_pad':
         size_adjustment_function = partial(postprocessing.crop_image, target_size=config.general.original_size)
     elif config.general.loader_mode == 'resize' or config.general.loader_mode == 'stacking':
@@ -226,79 +230,53 @@ def network(config, suffix='', train_mode=True):
     else:
         raise NotImplementedError
 
-    if train_mode:
-        network.set_mode_train()
-        network.set_parameters_upstream({'experiment_directory': config.execution.experiment_dir,
-                                         })
-        return network
-    else:
-        mask_resize = Step(name='mask_resize{}'.format(suffix),
+    if USE_TTA:
+        preprocessing, tta_generator = pipelines.preprocessing_inference_tta(config, model_name='segmentation_network')
+
+        segmentation_network = Step(name='segmentation_network',
+                                    transformer=models.SegmentationModel(**config.model['segmentation_network']),
+                                    input_data=['callback_input'],
+                                    input_steps=[preprocessing])
+
+        tta_aggregator = pipelines.aggregator('tta_aggregator', segmentation_network,
+                                              tta_generator=tta_generator,
+                                              config=config.tta_aggregator)
+
+        prediction_renamed = Step(name='prediction_renamed',
+                                  transformer=IdentityOperation(),
+                                  input_steps=[tta_aggregator],
+                                  adapter=Adapter({'mask_prediction': E(tta_aggregator.name, 'aggregated_prediction')
+                                                   }))
+
+        mask_resize = Step(name='mask_resize',
                            transformer=misc.make_apply_transformer(size_adjustment_function,
                                                                    output_name='resized_images',
                                                                    apply_on=['images']),
-                           input_steps=[network],
-                           adapter=Adapter({'images': E(network.name, 'mask_prediction'),
+                           input_steps=[prediction_renamed],
+                           adapter=Adapter({'images': E(prediction_renamed.name, 'mask_prediction'),
+                                            }))
+    else:
+        preprocessing = pipelines.preprocessing_inference(config, model_name='segmentation_network')
+
+        segmentation_network = misc.FineTuneStep(name='segmentation_network',
+                                                 transformer=models.SegmentationModel(
+                                                     **config.model['segmentation_network']),
+                                                 input_data=['callback_input'],
+                                                 input_steps=[preprocessing],
+                                                 adapter=Adapter({'datagen': E(preprocessing.name, 'datagen'),
+                                                                  'validation_datagen': E(preprocessing.name,
+                                                                                          'validation_datagen'),
+                                                                  'meta_valid': E('callback_input', 'meta_valid'),
+                                                                  }))
+        mask_resize = Step(name='mask_resize',
+                           transformer=misc.make_apply_transformer(size_adjustment_function,
+                                                                   output_name='resized_images',
+                                                                   apply_on=['images']),
+                           input_steps=[segmentation_network],
+                           adapter=Adapter({'images': E(segmentation_network.name, 'mask_prediction'),
                                             }))
 
-        binarizer = Step(name='binarizer{}'.format(suffix),
-                         transformer=misc.make_apply_transformer(
-                             partial(postprocessing.binarize, threshold=config.thresholder.threshold_masks),
-                             output_name='binarized_images',
-                             apply_on=['images']),
-                         input_steps=[mask_resize],
-                         adapter=Adapter({'images': E(mask_resize.name, 'resized_images'),
-                                          }))
-
-        labeler = Step(name='labeler{}'.format(suffix),
-                       transformer=misc.make_apply_transformer(postprocessing.label,
-                                                               output_name='labeled_images',
-                                                               apply_on=['images']),
-                       input_steps=[binarizer],
-                       adapter=Adapter({'images': E(binarizer.name, 'binarized_images'),
-                                        }))
-
-        labeler.set_mode_inference()
-        labeler.set_parameters_upstream({'experiment_directory': config.execution.experiment_dir,
-                                         'is_fittable': False
-                                         })
-        network.is_fittable = True
-        return labeler
-
-
-def network_tta(config, suffix=''):
-    preprocessing, tta_generator = pipelines.preprocessing_inference_tta(config, model_name='network')
-
-    network = Step(name='network{}'.format(suffix),
-                   transformer=models.SegmentationModel(**config.model['network']),
-                   input_data=['callback_input'],
-                   input_steps=[preprocessing])
-
-    tta_aggregator = pipelines.aggregator('tta_aggregator{}'.format(suffix), network,
-                                          tta_generator=tta_generator,
-                                          config=config.tta_aggregator)
-
-    prediction_renamed = Step(name='prediction_renamed{}'.format(suffix),
-                              transformer=IdentityOperation(),
-                              input_steps=[tta_aggregator],
-                              adapter=Adapter({'mask_prediction': E(tta_aggregator.name, 'aggregated_prediction')
-                                               }))
-
-    if config.general.loader_mode == 'resize_and_pad':
-        size_adjustment_function = partial(postprocessing.crop_image, target_size=config.general.original_size)
-    elif config.general.loader_mode == 'resize' or config.general.loader_mode == 'stacking':
-        size_adjustment_function = partial(postprocessing.resize_image, target_size=config.general.original_size)
-    else:
-        raise NotImplementedError
-
-    mask_resize = Step(name='mask_resize{}'.format(suffix),
-                       transformer=misc.make_apply_transformer(size_adjustment_function,
-                                                               output_name='resized_images',
-                                                               apply_on=['images']),
-                       input_steps=[prediction_renamed],
-                       adapter=Adapter({'images': E(prediction_renamed.name, 'mask_prediction'),
-                                        }))
-
-    binarizer = Step(name='binarizer{}'.format(suffix),
+    binarizer = Step(name='binarizer',
                      transformer=misc.make_apply_transformer(
                          partial(postprocessing.binarize, threshold=config.thresholder.threshold_masks),
                          output_name='binarized_images',
@@ -307,7 +285,7 @@ def network_tta(config, suffix=''):
                      adapter=Adapter({'images': E(mask_resize.name, 'resized_images'),
                                       }))
 
-    labeler = Step(name='labeler{}'.format(suffix),
+    labeler = Step(name='labeler',
                    transformer=misc.make_apply_transformer(postprocessing.label,
                                                            output_name='labeled_images',
                                                            apply_on=['images']),
@@ -315,12 +293,20 @@ def network_tta(config, suffix=''):
                    adapter=Adapter({'images': E(binarizer.name, 'binarized_images'),
                                     }))
 
-    labeler.set_mode_inference()
-    labeler.set_parameters_upstream({'experiment_directory': config.execution.experiment_dir,
-                                     'is_fittable': False
-                                     })
-    network.is_fittable = True
-    return labeler
+    bounding_boxer = Step(name='bounding_boxer',
+                          transformer=misc.make_apply_transformer(postprocessing.masks_to_bounding_boxes,
+                                                                  output_name='labeled_images',
+                                                                  apply_on=['images']),
+                          input_steps=[labeler],
+                          adapter=Adapter({'images': E(labeler.name, 'labeled_images'),
+                                           }))
+
+    bounding_boxer.set_mode_inference()
+    bounding_boxer.set_parameters_upstream({'experiment_directory': config.execution.experiment_dir,
+                                            'is_fittable': False
+                                            })
+    segmentation_network.is_fittable = True
+    return bounding_boxer
 
 
 #   __________   ___  _______   ______  __    __  .___________. __    ______   .__   __.
@@ -336,13 +322,13 @@ def train():
     meta = pd.read_csv(PARAMS.metadata_filepath)
     meta_train = meta[meta['is_train'] == 1]
 
-    meta_train_split, meta_valid_split = train_test_split(meta_train,
-                                                          stratify=meta_train[IS_NOT_EMPTY_COLUMN],
-                                                          test_size=PARAMS.evaluation_size,
-                                                          shuffle=True, random_state=SEED)
-    _, meta_valid_split = train_test_split(meta_valid_split, stratify=meta_valid_split[IS_NOT_EMPTY_COLUMN],
-                                           test_size=PARAMS.in_train_evaluation_size,
-                                           shuffle=True, random_state=SEED)
+    meta_train_split, meta_valid_split = misc.train_test_split_with_empty_fraction(meta_train,
+                                                                                   empty_fraction=PARAMS.evaluation_empty_fraction,
+                                                                                   test_size=PARAMS.evaluation_size,
+                                                                                   shuffle=True, random_state=SEED)
+
+    meta_valid_split = meta_valid_split[meta_valid_split[IS_NOT_EMPTY_COLUMN] == 1].sample(
+        PARAMS.in_train_evaluation_size, random_state=SEED)
 
     if DEV_MODE:
         meta_train_split = meta_train_split.sample(PARAMS.dev_mode_size, random_state=SEED)
@@ -354,29 +340,29 @@ def train():
                                }
             }
 
-    pipeline_network = network(config=CONFIG, train_mode=True)
-    pipeline_network.fit_transform(data)
+    pipeline = train_segmentation_network(config=CONFIG)
+    pipeline.fit_transform(data)
 
 
 def evaluate():
     meta = pd.read_csv(PARAMS.metadata_filepath)
     meta_train = meta[meta['is_train'] == 1]
 
-    _, meta_valid_split = train_test_split(meta_train,
-                                           stratify=meta_train[IS_NOT_EMPTY_COLUMN],
-                                           test_size=PARAMS.evaluation_size,
-                                           shuffle=True, random_state=SEED)
+    _, meta_valid_split = misc.train_test_split_with_empty_fraction(meta_train,
+                                                                    empty_fraction=PARAMS.evaluation_empty_fraction,
+                                                                    test_size=PARAMS.evaluation_size,
+                                                                    shuffle=True, random_state=SEED)
 
     if DEV_MODE:
         meta_valid_split = meta_valid_split.sample(PARAMS.dev_mode_size, random_state=SEED)
 
-    pipeline = network(config=CONFIG, train_mode=False)
+    pipeline = inference_pipeline(config=CONFIG)
 
     prediction = generate_submission(meta_valid_split, pipeline, CHUNK_SIZE)
     gt = io.read_gt_subset(PARAMS.annotation_file, meta_valid_split[ID_COLUMN] + '.jpg')
     f2 = metrics.f_beta_metric(gt, prediction, beta=2)
-    LOGGER.info('F2 {}'.format(f2))
-    CTX.channel_send('F2', 0, f2)
+    LOGGER.info('f2 {}'.format(f2))
+    CTX.channel_send('f2', 0, f2)
 
 
 def predict():
@@ -386,7 +372,7 @@ def predict():
     if DEV_MODE:
         meta_test = meta_test.sample(PARAMS.dev_mode_size, random_state=SEED)
 
-    pipeline = network(config=CONFIG, train_mode=False)
+    pipeline = inference_pipeline(config=CONFIG)
 
     submission = generate_submission(meta_test, pipeline, CHUNK_SIZE)
 

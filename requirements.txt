@@ -16,6 +16,6 @@ Pillow==5.1.0
 PyYAML==3.12
 Cython==0.28.2
 pycocotools==2.0.0
-steppy==0.1.13
+steppy==0.1.14
 steppy-toolkit==0.1.12
 pretrainedmodels==0.7.0

@@ -68,7 +68,6 @@ class DecoderBlock(nn.Module):
         self.conv1 = Conv2dBnRelu(in_channels, middle_channels)
         self.conv2 = Conv2dBnRelu(middle_channels, out_channels)
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear')
-        self.relu = nn.ReLU(inplace=True)
         self.channel_se = ChannelSELayer(out_channels, reduction=16)
         self.spatial_se = SpatialSELayer(out_channels)
 
@@ -82,7 +81,7 @@ class DecoderBlock(nn.Module):
         channel_se = self.channel_se(x)
         spatial_se = self.spatial_se(x)
 
-        x = self.relu(channel_se + spatial_se)
+        x = channel_se + spatial_se
         return x
 
 

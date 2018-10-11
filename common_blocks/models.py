@@ -5,7 +5,7 @@ import torch.optim as optim
 from toolkit.pytorch_transformers.models import Model
 from torch.autograd import Variable
 
-from .architectures import unet, large_kernel_matters
+from .architectures import unet, large_kernel_matters, pspnet
 from . import callbacks as cbk
 from .lovasz_losses import lovasz_hinge
 from common_blocks.utils.misc import sigmoid, softmax, get_list_of_image_predictions
@@ -36,6 +36,11 @@ ARCHITECTURES = {'UNetResNet': {'model': unet.UNetResNet,
                                                          'dropout_2d': 0.0, 'use_relu': True, 'pool0': False
                                                          },
                                         'init_weights': False},
+                 'PSPNet': {'model': pspnet.PSPNet,
+                            'model_config': {'encoder_depth': 34, 'pretrained': True,
+                                             'use_hypercolumn': True, 'pool0': False
+                                             },
+                            }
                  }
 
 
@@ -164,6 +169,7 @@ class SegmentationModel(Model):
         elif self.activation_func == 'sigmoid':
             loss_function = lovasz_loss
             # loss_function = DiceLoss()
+            # loss_function = FocalWithLogitsLoss()
             # loss_function = nn.BCEWithLogitsLoss()
         else:
             raise Exception('Only softmax and sigmoid activations are allowed')

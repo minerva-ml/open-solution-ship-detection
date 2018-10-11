@@ -18,7 +18,7 @@ from toolkit.pytorch_transformers.validation import score_model
 from common_blocks.utils.misc import get_logger, sigmoid, softmax, make_apply_transformer, get_list_of_image_predictions
 from common_blocks.utils.io import read_masks
 from .metrics import intersection_over_union_thresholds
-from .postprocessing import crop_image, resize_image, binarize, label
+from .postprocessing import crop_image, resize_image, binarize, label, masks_to_bounding_boxes
 
 logger = get_logger()
 
@@ -670,7 +670,16 @@ def postprocessing_pipeline_simplified(cache_dirpath, loader_mode):
                    input_steps=[binarizer],
                    adapter=Adapter({'images': E(binarizer.name, 'binarized_images'),
                                     }))
-    labeler.set_mode_inference()
-    labeler.set_parameters_upstream({'experiment_directory': cache_dirpath,
-                                     'is_fittable': False})
-    return labeler
+    bounding_boxer = Step(name='bounding_boxer',
+                          transformer=make_apply_transformer(masks_to_bounding_boxes,
+                                                             output_name='labeled_images',
+                                                             apply_on=['images']),
+                          input_steps=[labeler],
+                          adapter=Adapter({'images': E(labeler.name, 'labeled_images'),
+                                           }))
+
+    bounding_boxer.set_mode_inference()
+    bounding_boxer.set_parameters_upstream({'experiment_directory': cache_dirpath,
+                                            'is_fittable': False
+                                            })
+    return bounding_boxer

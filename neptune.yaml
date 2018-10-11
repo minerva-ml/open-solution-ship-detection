@@ -4,7 +4,7 @@ name: airbus_ships_challenge
 tags: [solution-1]
 
 metric:
-  channel: 'F2'
+  channel: 'f2'
   goal: maximize
 
 #Comment out if not in Cloud Environment
@@ -23,17 +23,15 @@ exclude:
 parameters:
 
   # Data Paths
-  train_images_dir:     /PATH/TO/ships/data/train
-  test_images_dir:      /PATH/TO/ships/data/test
-  metadata_filepath:    /PATH/TO/ships/files/ships_metadata.csv
-  annotation_file:      /PATH/TO/ships/data/train_ship_segmentations.csv
-  masks_overlayed_dir:  /PATH/TO/ships/files/masks_overlayed
+  train_images_dir:     /public/challenges/kaggle-ship-detection/train
+  test_images_dir:      /public/challenges/kaggle-ship-detection/test
+  metadata_filepath:    /outputs/ships_metadata.csv
+  annotation_file:      /public/challenges/kaggle-ship-detection/train_ship_segmentations.csv
+  masks_overlayed_dir:  /output/masks_overlayed
 
   # Execution
-  overwrite: 0
   num_workers: 4
   num_threads: 4
-  kaggle_message: 'solution_1'
   image_source: disk
   pin_memory: 1
   loader_mode: resize
@@ -49,9 +47,9 @@ parameters:
   training_sampler_size: 2000
   training_sampler_empty_fraction: 0.0
   evaluation_size: 10000
+  evaluation_empty_fraction: 0.52
   in_train_evaluation_size: 1000
-  valid_empty_fraction: None
-  fine_tuning: 0
+  fine_tuning: 1
 
   # Network parameters
   network_output_channels: 2
@@ -59,7 +57,7 @@ parameters:
   architecture: UNetSeResNetXt
 
   # Training schedule
-  epochs_nr: 2
+  epochs_nr: 10
   batch_size_train: 4
   batch_size_inference: 4
   lr: 0.0007

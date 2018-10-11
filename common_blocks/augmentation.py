@@ -110,9 +110,6 @@ def test_time_augmentation_transform(image, tta_parameters):
         image = np.flipud(image)
     if tta_parameters['lr_flip']:
         image = np.fliplr(image)
-    if tta_parameters['color_shift']:
-        tta_intensity = reseed(tta_intensity_seq, deterministic=False)
-        image = tta_intensity.augment_image(image)
     image = rotate(image, tta_parameters['rotation'])
     return image
 
