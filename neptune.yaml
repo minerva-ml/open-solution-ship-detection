@@ -1,7 +1,7 @@
 #project: USERNAME/PROJECT
 
 name: airbus_ships_challenge
-tags: [solution-1]
+tags: [solution-2]
 
 metric:
   channel: 'f2'
@@ -25,7 +25,7 @@ parameters:
   # Data Paths
   train_images_dir:     /public/challenges/kaggle-ship-detection/train
   test_images_dir:      /public/challenges/kaggle-ship-detection/test
-  metadata_filepath:    /outputs/ships_metadata.csv
+  metadata_filepath:    /output/metadata.csv
   annotation_file:      /public/challenges/kaggle-ship-detection/train_ship_segmentations.csv
   masks_overlayed_dir:  /output/masks_overlayed
 
@@ -38,17 +38,17 @@ parameters:
   resize_target_size: 256
   pad_method: symmetric
   target_format: 'joblib'
-  dev_mode_size: 500
+  dev_mode_size: 50
 
   # General parameters
   image_h: 256
   image_w: 256
   image_channels: 3
-  training_sampler_size: 2000
+  training_sampler_size: 2500
   training_sampler_empty_fraction: 0.0
   evaluation_size: 10000
   evaluation_empty_fraction: 0.52
-  in_train_evaluation_size: 1000
+  in_train_evaluation_size: 500
   fine_tuning: 1
 
   # Network parameters
@@ -57,13 +57,13 @@ parameters:
   architecture: UNetSeResNetXt
 
   # Training schedule
-  epochs_nr: 10
+  epochs_nr: 1000
   batch_size_train: 4
   batch_size_inference: 4
-  lr: 0.0007
+  lr: 0.0006
   momentum: 0.9
   gamma: 0.95
-  patience: 10
+  patience: 20
   validation_metric_name: 'f2'
   minimize_validation_metric: 0
   reduce_factor: 0.5

@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 import torch.optim as optim
 from toolkit.pytorch_transformers.models import Model
 from torch.autograd import Variable
@@ -167,10 +168,11 @@ class SegmentationModel(Model):
         if self.activation_func == 'softmax':
             raise NotImplementedError('No softmax loss defined')
         elif self.activation_func == 'sigmoid':
-            loss_function = lovasz_loss
-            # loss_function = DiceLoss()
-            # loss_function = FocalWithLogitsLoss()
+            loss_function = weighted_sum_loss
             # loss_function = nn.BCEWithLogitsLoss()
+            # loss_function = DiceWithLogitsLoss()
+            # loss_function = lovasz_loss
+            # loss_function = FocalWithLogitsLoss()
         else:
             raise Exception('Only softmax and sigmoid activations are allowed')
         self.loss_function = [('mask', loss_function, 1.0)]
@@ -191,32 +193,47 @@ class SegmentationModel(Model):
 
 
 class FocalWithLogitsLoss(nn.Module):
-    def __init__(self, alpha=1.0, gamma=1.0):
+    def __init__(self, alpha=1.0, gamma=1.0, reduction='elementwise_mean'):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
+        self.reduction = reduction
 
-    def forward(self, input, target):
-        if not (target.size() == input.size()):
-            raise ValueError("Target size ({}) must be the same as input size ({})".format(target.size(), input.size()))
+    def forward(self, output, target):
+        if not (target.size() == output.size()):
+            raise ValueError(
+                "Target size ({}) must be the same as input size ({})".format(target.size(), output.size()))
 
-        max_val = (-input).clamp(min=0)
-        logpt = input - input * target + max_val + ((-max_val).exp() + (-input - max_val).exp()).log()
+        max_val = (-output).clamp(min=0)
+        logpt = output - output * target + max_val + ((-max_val).exp() + (-output - max_val).exp()).log()
         pt = torch.exp(-logpt)
         at = self.alpha * target + (1 - target)
         loss = at * ((1 - pt).pow(self.gamma)) * logpt
-        return loss
+
+        if self.reduction == 'none':
+            return loss
+        elif self.reduction == 'elementwise_mean':
+            return loss.mean()
+        else:
+            return loss.sum()
 
 
-class DiceLoss(nn.Module):
+class DiceWithLogitsLoss(nn.Module):
     def __init__(self, smooth=0, eps=1e-7):
         super().__init__()
         self.smooth = smooth
         self.eps = eps
 
     def forward(self, output, target):
+        output = F.sigmoid(output)
         return 1 - (2 * torch.sum(output * target) + self.smooth) / (
                 torch.sum(output) + torch.sum(target) + self.smooth + self.eps)
+
+
+def weighted_sum_loss(output, target):
+    bce = nn.BCEWithLogitsLoss()(output, target)
+    dice = DiceWithLogitsLoss()(output, target)
+    return bce + 0.25 * dice
 
 
 def lovasz_loss(output, target):
@@ -246,6 +263,6 @@ def callbacks_network(callbacks_config):
     init_lr_finder = cbk.InitialLearningRateFinder()
     return cbk.CallbackList(
         callbacks=[experiment_timing, training_monitor, validation_monitor,
-                   model_checkpoints, lr_scheduler, neptune_monitor, early_stopping,
-                   # init_lr_finder
+                   model_checkpoints, neptune_monitor, early_stopping,
+                   lr_scheduler,  #init_lr_finder,
                    ])
