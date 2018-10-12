@@ -25,7 +25,7 @@ parameters:
   # Data Paths
   train_images_dir:     /public/challenges/kaggle-ship-detection/train
   test_images_dir:      /public/challenges/kaggle-ship-detection/test
-  metadata_filepath:    /outputs/ships_metadata.csv
+  metadata_filepath:    /output/metadata.csv
   annotation_file:      /public/challenges/kaggle-ship-detection/train_ship_segmentations.csv
   masks_overlayed_dir:  /output/masks_overlayed
 
