@@ -3,7 +3,7 @@ from torch.nn import functional as F
 import torch
 
 from .base import Conv2dBnRelu
-from .encoders import ResNetEncoders
+from .encoders import get_encoder_channel_nr
 
 
 class PSPModule(nn.Module):
@@ -42,48 +42,43 @@ class PSPUpsample(nn.Module):
 
 class PSPNet(nn.Module):
     def __init__(self,
-                 encoder_depth,
+                 encoder,
                  num_classes=2,
                  sizes=(1, 2, 3, 6),
-                 deep_features_size=1024,
                  dropout_2d=0.2,
-                 pretrained=False,
                  use_hypercolumn=False,
                  pool0=False):
         super().__init__()
         self.num_classes = num_classes
         self.dropout_2d = dropout_2d
         self.use_hypercolumn = use_hypercolumn
+        self.pool0 = pool0
 
-        self.encoders = ResNetEncoders(encoder_depth, pretrained=pretrained, pool0=pool0)
+        self.encoder = encoder
+        encoder_channel_nr = get_encoder_channel_nr(self.encoder)
+        bottom_channel_nr = encoder_channel_nr[3]
 
-        if encoder_depth in [18, 34]:
-            bottom_channel_nr = 512
-        elif encoder_depth in [50, 101, 152]:
-            bottom_channel_nr = 2048
-        else:
-            raise NotImplementedError('only 18, 34, 50, 101, 152 version of Resnet are implemented')
+        self.psp = PSPModule(bottom_channel_nr, bottom_channel_nr, sizes)
 
-        self.psp = PSPModule(bottom_channel_nr, deep_features_size, sizes)
-
-        self.up4 = PSPUpsample(deep_features_size, deep_features_size // 2)
-        self.up3 = PSPUpsample(deep_features_size // 2, deep_features_size // 4)
-        self.up2 = PSPUpsample(deep_features_size // 4, deep_features_size // 8)
-        self.up1 = PSPUpsample(deep_features_size // 8, deep_features_size // 16)
+        self.up4 = PSPUpsample(bottom_channel_nr, bottom_channel_nr // 2)
+        self.up3 = PSPUpsample(bottom_channel_nr // 2, bottom_channel_nr // 4)
+        self.up2 = PSPUpsample(bottom_channel_nr // 4, bottom_channel_nr // 8)
+        self.up1 = PSPUpsample(bottom_channel_nr // 8, bottom_channel_nr // 16)
 
         if self.use_hypercolumn:
-            self.final = nn.Sequential(Conv2dBnRelu(15 * bottom_channel_nr // 8, bottom_channel_nr // 8),
-                                       nn.Conv2d(bottom_channel_nr // 8, num_classes, kernel_size=1, padding=0))
+            self.up0 = PSPUpsample(15 * bottom_channel_nr // 16, 15 * bottom_channel_nr // 16)
+            self.final = nn.Sequential(Conv2dBnRelu(15 * bottom_channel_nr // 16, bottom_channel_nr // 16),
+                                       nn.Conv2d(bottom_channel_nr // 16, num_classes, kernel_size=1, padding=0))
         else:
-            self.final = nn.Sequential(Conv2dBnRelu(bottom_channel_nr // 8, bottom_channel_nr // 8),
-                                       nn.Conv2d(bottom_channel_nr // 8, num_classes, kernel_size=1, padding=0))
+            self.up0 = PSPUpsample(bottom_channel_nr // 16, bottom_channel_nr // 16)
+            self.final = nn.Sequential(Conv2dBnRelu(bottom_channel_nr // 16, bottom_channel_nr // 16),
+                                       nn.Conv2d(bottom_channel_nr // 16, num_classes, kernel_size=1, padding=0))
 
     def forward(self, x):
-        encoder2, encoder3, encoder4, encoder5 = self.encoders(x)
+        encoder2, encoder3, encoder4, encoder5 = self.encoder(x)
         encoder5 = F.dropout2d(encoder5, p=self.dropout_2d)
 
         psp = self.psp(encoder5)
-
         up4 = self.up4(psp)
         up3 = self.up3(up4)
         up2 = self.up2(up3)
@@ -96,5 +91,8 @@ class PSPNet(nn.Module):
                                      ], 1)
             drop = F.dropout2d(hypercolumn, p=self.dropout_2d)
         else:
-            drop = F.dropout2d(up4, p=self.dropout_2d)
+            drop = F.dropout2d(up1, p=self.dropout_2d)
+
+        if self.pool0:
+            drop = self.up0(drop)
         return self.final(drop)

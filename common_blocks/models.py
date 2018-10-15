@@ -6,43 +6,51 @@ import torch.optim as optim
 from toolkit.pytorch_transformers.models import Model
 from torch.autograd import Variable
 
-from .architectures import unet, large_kernel_matters, pspnet
+from common_blocks.architectures.classification import Resnet101
+from common_blocks.utils.misc import get_list_of_image_predictions, sigmoid, softmax
+from .architectures import encoders, unet, large_kernel_matters, pspnet
 from . import callbacks as cbk
 from .lovasz_losses import lovasz_hinge
-from common_blocks.utils.misc import sigmoid, softmax, get_list_of_image_predictions
 
-ARCHITECTURES = {'UNetResNet': {'model': unet.UNetResNet,
-                                'model_config': {'encoder_depth': 34, 'use_hypercolumn': False,
-                                                 'dropout_2d': 0.0, 'pretrained': True, 'pool0': False
-                                                 },
-                                'init_weights': False},
-                 'UNetSeResNet': {'model': unet.UNetSeResNet,
-                                  'model_config': {'encoder_depth': 50, 'use_hypercolumn': False,
-                                                   'dropout_2d': 0.0, 'pretrained': 'imagenet', 'pool0': False
-                                                   },
-                                  'init_weights': False},
-                 'UNetSeResNetXt': {'model': unet.UNetSeResNetXt,
-                                    'model_config': {'encoder_depth': 50, 'use_hypercolumn': False,
-                                                     'dropout_2d': 0.0, 'pretrained': 'imagenet', 'pool0': False
-                                                     },
-                                    'init_weights': False},
-                 'UNetDenseNet': {'model': unet.UNetDenseNet,
-                                  'model_config': {'encoder_depth': 121, 'use_hypercolumn': False,
-                                                   'dropout_2d': 0.0, 'pretrained': 'imagenet', 'pool0': False
-                                                   },
-                                  'init_weights': False},
+ENCODERS = {'ResNet': {'model': encoders.ResNetEncoders,
+                       'model_config': {'encoder_depth': 34, 'pretrained': True, 'pool0': True
+                                        }
+                       },
+            'SeResNet': {'model': encoders.SeResNetEncoders,
+                         'model_config': {'encoder_depth': 50, 'pretrained': 'imagenet', 'pool0': True
+                                          }
+                         },
+            'SeResNetXt': {'model': encoders.SeResNetXtEncoders,
+                           'model_config': {'encoder_depth': 101, 'pretrained': 'imagenet', 'pool0': True
+                                            }
+                           },
+            'DenseNet': {'model': encoders.DenseNetEncoders,
+                         'model_config': {'encoder_depth': 121, 'pretrained': 'imagenet', 'pool0': True
+                                          }
+                         },
+            }
+
+ARCHITECTURES = {'UNet': {'model': unet.UNet,
+                          'model_config': {'use_hypercolumn': False, 'dropout_2d': 0.0, 'pool0': True
+                                           },
+                          'init_weights': False},
                  'LargeKernelMatters': {'model': large_kernel_matters.LargeKernelMatters,
-                                        'model_config': {'encoder_depth': 34, 'pretrained': True,
-                                                         'kernel_size': 9, 'internal_channels': 21,
-                                                         'dropout_2d': 0.0, 'use_relu': True, 'pool0': False
+                                        'model_config': {'kernel_size': 9, 'internal_channels': 21,
+                                                         'dropout_2d': 0.0, 'use_relu': True, 'pool0': True
                                                          },
-                                        'init_weights': False},
+                                        },
                  'PSPNet': {'model': pspnet.PSPNet,
-                            'model_config': {'encoder_depth': 34, 'pretrained': True,
-                                             'use_hypercolumn': True, 'pool0': False
+                            'model_config': {'use_hypercolumn': False, 'pool0': True
                                              },
-                            }
+                            },
                  }
+
+SNS_ARCHITECTURES = {
+    "BinaryResnet101": {'model': Resnet101,
+                        'model_config': {'pretrained': True},
+
+                        'init_weights': False}
+}
 
 
 class SegmentationModel(Model):
@@ -73,6 +81,7 @@ class SegmentationModel(Model):
             self.callbacks.on_epoch_begin()
             for batch_id, data in enumerate(batch_gen):
                 self.callbacks.on_batch_begin()
+                self.freeze_weights()
                 metrics = self._fit_loop(data)
                 self.callbacks.on_batch_end(metrics=metrics)
                 if batch_id == steps:
@@ -133,7 +142,7 @@ class SegmentationModel(Model):
         batch_gen, steps = datagen
         outputs = {}
         for batch_id, data in enumerate(batch_gen):
-            if isinstance(data, list):
+            if isinstance(data, (list, tuple)):
                 X = data[0]
             else:
                 X = data
@@ -158,16 +167,21 @@ class SegmentationModel(Model):
         return outputs
 
     def set_model(self):
-        architecture = self.architecture_config['model_params']['architecture']
-        config = ARCHITECTURES[architecture]
-        self.model = config['model'](num_classes=self.architecture_config['model_params']['out_channels'],
-                                     **config['model_config'])
+        architecture_name = self.architecture_config['model_params']['architecture']
+        encoder_name = self.architecture_config['model_params']['encoder']
+        encoder = ENCODERS[encoder_name]
+        architecture = ARCHITECTURES[architecture_name]
+
+        self.model = architecture['model'](encoder=encoder['model'](**encoder['model_config']),
+                                           num_classes=self.architecture_config['model_params']['out_channels'],
+                                           **architecture['model_config'])
         self._initialize_model_weights = lambda: None
 
     def set_loss(self):
         if self.activation_func == 'softmax':
             raise NotImplementedError('No softmax loss defined')
         elif self.activation_func == 'sigmoid':
+
             loss_function = weighted_sum_loss
             # loss_function = nn.BCEWithLogitsLoss()
             # loss_function = DiceWithLogitsLoss()
@@ -176,6 +190,24 @@ class SegmentationModel(Model):
         else:
             raise Exception('Only softmax and sigmoid activations are allowed')
         self.loss_function = [('mask', loss_function, 1.0)]
+
+    def freeze_weights(self):
+        # # freeze encoder
+        # if isinstance(self.model, nn.DataParallel):
+        #     encoder_params = self.model.module.encoder.parameters()
+        # else:
+        #     encoder_params = self.model.encoder.parameters()
+        #
+        # for parameter in encoder_params:
+        #     parameter.requires_grad = False
+        #
+        # # freeze batchnorm
+        # for m in self.model.modules():
+        #     if isinstance(m, nn.BatchNorm2d):
+        #         m.eval()
+        #         m.weight.requires_grad = False
+        #         m.bias.requires_grad = False
+        pass
 
     def load(self, filepath):
         self.model.eval()
@@ -190,6 +222,34 @@ class SegmentationModel(Model):
         else:
             self.model.load_state_dict(torch.load(filepath, map_location=lambda storage, loc: storage))
         return self
+
+
+class BinaryModel(SegmentationModel):
+    def __init__(self, architecture_config, training_config, callbacks_config, **kwargs):
+        super().__init__(architecture_config, training_config, callbacks_config)
+        self.weight_regularization = weight_regularization
+        self.set_model()
+        self.optimizer = optim.Adam(self.weight_regularization(self.model, **architecture_config['regularizer_params']),
+                                    **architecture_config['optimizer_params'])
+
+        self.loss_function = [('ship_no_ship', nn.BCEWithLogitsLoss(), 1.0)]
+        self.epochs = 10
+        self.callbacks_config = callbacks_config
+        self.callbacks = callbacks_ship_no_ship(self.callbacks_config)
+        self.activation_func = 'sigmoid'
+        self.validation_loss = {}
+
+    def set_model(self):
+        architecture = self.architecture_config['model_params']['architecture']
+        config = SNS_ARCHITECTURES[architecture]
+        self.model = config['model'](**config['model_config'])
+        self._initialize_model_weights = lambda: None
+
+    def set_loss(self):
+        self.loss_function = [('ship_no_ship', nn.BCEWithLogitsLoss(), 1.0)]
+
+    def freeze_weights(self):
+        pass
 
 
 class FocalWithLogitsLoss(nn.Module):
@@ -261,8 +321,17 @@ def callbacks_network(callbacks_config):
     neptune_monitor = cbk.NeptuneMonitor(**callbacks_config['neptune_monitor'])
     early_stopping = cbk.EarlyStopping(**callbacks_config['early_stopping'])
     init_lr_finder = cbk.InitialLearningRateFinder()
+
     return cbk.CallbackList(
         callbacks=[experiment_timing, training_monitor, validation_monitor,
                    model_checkpoints, neptune_monitor, early_stopping,
                    lr_scheduler,  #init_lr_finder,
                    ])
+
+
+def callbacks_ship_no_ship(callbacks_config):
+    training_monitor = cbk.TrainingMonitor(**callbacks_config['training_monitor'])
+    validation_monitor = cbk.SNS_ValidationMonitor()
+    model_checkpoints = cbk.ModelCheckpoint(**callbacks_config['model_checkpoint'])
+
+    return cbk.CallbackList([training_monitor, validation_monitor, model_checkpoints])

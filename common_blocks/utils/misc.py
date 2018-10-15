@@ -19,8 +19,11 @@ from steppy.utils import get_logger as get_steppy_logger
 import yaml
 
 from .masks import rle_from_mask
+import os
 
-NEPTUNE_CONFIG_PATH = str(pathlib.Path(__file__).resolve().parents[1].parents[0] / 'neptune.yaml')
+NEPTUNE_CONFIG_PATH = os.environ.get('NEPTUNE_CONFIG_PATH',
+                                     str(pathlib.Path(__file__).resolve().parents[1].parents[0] / 'neptune.yaml'))
+
 logger = get_steppy_logger()
 
 
@@ -33,6 +36,7 @@ def read_params(ctx):
 
 
 def read_yaml(fallback_file=NEPTUNE_CONFIG_PATH):
+    print("USING FALLBACK NEPTUNE CONFIG {}".format(fallback_file))
     with open(fallback_file) as f:
         config = yaml.load(f)
     return AttrDict(config)
@@ -72,6 +76,24 @@ def create_submission(image_ids, predictions):
 
     submission = pd.DataFrame(output, columns=['ImageId', 'EncodedPixels'])
     return submission
+
+
+def get_ship_no_ship_ids(image_ids, prediction):
+    ids_ship = [idx for idx, pred in zip(image_ids, prediction) if pred]
+    ids_no_ship = [idx for idx, pred in zip(image_ids, prediction) if not pred]
+    return ids_ship, ids_no_ship
+
+
+def combine_two_stage_predictions(ids_no_ship, prediction_ship, ordered_ids):
+    prediction_no_ship = pd.DataFrame({'ImageId': ids_no_ship})
+    prediction_no_ship['EncodedPixels'] = None
+
+    prediction_ship.reset_index(drop=True, inplace=True)
+    prediction_no_ship.reset_index(drop=True, inplace=True)
+
+    prediction = pd.concat([prediction_ship, prediction_no_ship], axis=0)
+
+    return prediction[prediction['ImageId'].isin(ordered_ids)]
 
 
 def generate_data_frame_chunks(meta, chunk_size):

@@ -1,10 +1,8 @@
-from functools import partial
-
-from steppy.base import Step
 from steppy.adapter import Adapter, E
+from steppy.base import Step
 
+from common_blocks.loaders import OneClassImageClassificatioLoader
 from . import loaders
-
 
 
 def preprocessing_train(config, model_name='network'):
@@ -54,6 +52,58 @@ def preprocessing_inference(config, model_name='network'):
                                    'y': E(reader_inference.name, 'y'),
                                    }))
     return loader
+
+
+def preprocessing_binary_train(config, model_name, suffix='_binary_model'):
+    reader_train = Step(name='xy_train{}'.format(suffix),
+                        transformer=loaders.MetaReader(train_mode=True, **config.meta_reader[model_name]),
+                        input_data=['input'],
+                        adapter=Adapter({'meta': E('input', 'meta')}))
+
+    reader_inference = Step(name='xy_inference{}'.format(suffix),
+                            transformer=loaders.MetaReader(train_mode=True, **config.meta_reader[model_name]),
+                            input_data=['callback_input'],
+                            adapter=Adapter({'meta': E('callback_input', 'meta_valid')}))
+
+    transformer = OneClassImageClassificatioLoader(
+        train_mode=True,
+        loader_params=config.loaders.resize.loader_params,
+        dataset_params=config.loaders.resize.dataset_params,
+        augmentation_params=config.loaders.resize.augmentation_params
+    )
+
+    binary_loader = Step(name='loader{}'.format(suffix),
+                         transformer=transformer,
+                         input_steps=[reader_train, reader_inference],
+                         adapter=Adapter({'X': E(reader_train.name, 'X'),
+                                          'y': E(reader_train.name, 'y'),
+                                          'X_valid': E(reader_inference.name, 'X'),
+                                          'y_valid': E(reader_inference.name, 'y'),
+                                          }))
+
+    return binary_loader
+
+
+def preprocessing_binary_inference(config, model_name, suffix='_binary_model'):
+    reader_inference = Step(name='xy_inference{}'.format(suffix),
+                            transformer=loaders.MetaReader(train_mode=True, **config.meta_reader[model_name]),
+                            input_data=['input'],
+                            adapter=Adapter({'meta': E('input', 'meta')}))
+
+    transformer = OneClassImageClassificatioLoader(
+        train_mode=True,
+        loader_params=config.loaders.resize.loader_params,
+        dataset_params=config.loaders.resize.dataset_params,
+        augmentation_params=config.loaders.resize.augmentation_params
+    )
+
+    binary_loader = Step(name='loader{}'.format(suffix),
+                         transformer=transformer,
+                         input_steps=[reader_inference],
+                         adapter=Adapter({'X': E(reader_inference.name, 'X'),
+                                          }))
+
+    return binary_loader
 
 
 def preprocessing_inference_tta(config, model_name='network'):

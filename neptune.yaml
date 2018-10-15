@@ -8,7 +8,7 @@ metric:
   goal: maximize
 
 #Comment out if not in Cloud Environment
-pip-requirements-file: requirements.txt
+#pip-requirements-file: requirements.txt
 
 exclude:
 - .git
@@ -38,7 +38,7 @@ parameters:
   resize_target_size: 256
   pad_method: symmetric
   target_format: 'joblib'
-  dev_mode_size: 50
+  dev_mode_size: 500
 
   # General parameters
   image_h: 256
@@ -54,13 +54,14 @@ parameters:
   # Network parameters
   network_output_channels: 2
   network_activation: 'sigmoid'
-  architecture: UNetSeResNetXt
+  architecture: LargeKernelMatters
+  encoder: ResNet
 
   # Training schedule
   epochs_nr: 1000
-  batch_size_train: 4
-  batch_size_inference: 4
-  lr: 0.0006
+  batch_size_train: 16
+  batch_size_inference: 16
+  lr: 0.0003
   momentum: 0.9
   gamma: 0.95
   patience: 20
@@ -77,3 +78,35 @@ parameters:
   # Postprocessing
   threshold_masks: 0.5
   tta_aggregation_method: mean
+
+  # -------------------- SNS (SHIP NO SHIP) ----------------------
+
+  # General parameters
+  sns_training_sampler_empty_fracion: 0.52
+
+  # Network parameters
+  sns_architecture: BinaryResnet101
+
+  # Training schedule
+  sns_epochs_nr: 100
+  sns_batch_size_train: 32
+  sns_batch_size_inference: 32
+  sns_lr: 0.001
+  sns_momentum: 0.9
+  sns_gamma: 0.95
+  sns_patience: 5
+  sns_validation_metric_name: 'sum'
+  sns_minimize_validation_metric_name: 0
+  sns_reduce_factor: 0.5
+  sns_reduce_patience: 10
+  sns_min_lr: 0
+
+
+  # Regularization
+  sns_use_batch_norm: 1
+  sns_l2_reg_conv: 0.0001
+
+  # Postprocessing
+  sns_threshold: 0.5
+
+

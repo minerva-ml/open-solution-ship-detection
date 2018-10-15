@@ -44,6 +44,10 @@ def binarize(image, threshold):
     return image_binarized
 
 
+def get_class(prediction, threshold):
+    return int(prediction > threshold)
+
+
 def label(mask):
     labeled, nr_true = ndi.label(mask)
     return labeled

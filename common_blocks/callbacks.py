@@ -1,24 +1,26 @@
 import os
-from functools import partial
 from datetime import datetime, timedelta
+from functools import partial
+from tempfile import TemporaryDirectory
 
+import neptune
 import numpy as np
 import torch
 from PIL import Image
-import neptune
-from torch.autograd import Variable
-from torch.optim.lr_scheduler import ExponentialLR, ReduceLROnPlateau
-from tempfile import TemporaryDirectory
-
-from steppy.base import Step, IdentityOperation
 from steppy.adapter import Adapter, E
+from steppy.base import Step
 from toolkit.pytorch_transformers.utils import Averager, persist_torch_model
 from toolkit.pytorch_transformers.validation import score_model
+from torch import nn
+from torch.autograd import Variable
+from torch.autograd import Variable as V
+from torch.optim.lr_scheduler import ExponentialLR, ReduceLROnPlateau
 
-from common_blocks.utils.misc import get_logger, sigmoid, softmax, make_apply_transformer, get_list_of_image_predictions
 from common_blocks.utils.io import read_masks
+from common_blocks.utils.misc import get_list_of_image_predictions, get_logger, make_apply_transformer, sigmoid, softmax
 from .metrics import intersection_over_union_thresholds
-from .postprocessing import crop_image, resize_image, binarize, label, masks_to_bounding_boxes
+
+from .postprocessing import crop_image, resize_image, binarize, label
 
 logger = get_logger()
 
@@ -73,6 +75,7 @@ class Callback:
         if self.epoch_id not in self.transformer.validation_loss.keys():
             self.transformer.validation_loss[self.epoch_id] = score_model(self.model, self.loss_function,
                                                                           self.validation_datagen)
+
         return self.transformer.validation_loss[self.epoch_id]
 
 
@@ -150,6 +153,7 @@ class TrainingMonitor(Callback):
     def on_batch_end(self, metrics, *args, **kwargs):
         for name, loss in metrics.items():
             loss = loss.data.cpu().numpy()[0]
+
             if name in self.epoch_loss_averagers.keys():
                 self.epoch_loss_averagers[name].send(loss)
             else:
@@ -431,6 +435,70 @@ class NeptuneMonitor(Callback):
         return predictions, targets_tensors
 
 
+class SNS_ValidationMonitor(Callback):
+    def __init__(self):
+        super().__init__()
+        self.ctx = neptune.Context()
+        self.best_loss = None
+
+    def set_params(self, transformer, validation_datagen, *args, **kwargs):
+        self.transformer = transformer
+        self.validation_datagen = validation_datagen
+        self.model = transformer.model
+        self.loss_function = transformer.loss_function
+
+    def on_epoch_end(self, *args, **kwargs):
+        self.model.eval()
+        self.epoch_id += 1
+        self.validation_loss = self.calculate_epoch_end_metrics()
+        epoch_end_loss = self.validation_loss['sum'][0]
+        epoch_end_acc = self.validation_loss['acc']
+
+        self.transformer.validation_loss[self.epoch_id] = {'acc': V(torch.Tensor([epoch_end_acc])),
+                                                           'sum': V(torch.Tensor([float(epoch_end_loss)]))}
+
+        logger.info('epoch {0} ship no ship epoch end validation loss: {1}'.format(self.epoch_id, epoch_end_loss))
+        logger.info('epoch {0} ship no ship epoch end accuracy: {1}'.format(self.epoch_id, epoch_end_acc))
+        self.ctx.channel_send("ship_no_ship_epoch_end_acc", epoch_end_acc)
+        self.ctx.channel_send("ship_no_ship_epoch_end_loss", epoch_end_loss)
+
+    def calculate_epoch_end_metrics(self):
+        self.model.eval()
+        batch_gen, steps = self.validation_datagen
+        sum_loss = 0
+        Ys = []
+        Ypreds = []
+        for batch in batch_gen:
+            X, y = batch
+            X, y = V(X, volatile=True), V(y, volatile=True)
+            if torch.cuda.is_available():
+                X, y = X.cuda(), y.cuda()
+
+            y_pred = self.model(X)
+            for name, lossfunc, weight in self.loss_function:
+                loss = lossfunc(y, y_pred.squeeze()).sigmoid()
+
+            y_pred = y_pred.data.cpu().numpy().astype(int).ravel()
+            y = y.data.cpu().numpy()
+            sum_loss += loss.data.cpu().numpy()
+            Ys.append(y)
+            Ypreds.append(y_pred)
+
+        Ys = np.concatenate(Ys)
+        Ypreds = (np.concatenate(Ypreds) > 0.5).astype(int)
+        matches = sum(Ys == Ypreds)
+        acc = matches / float(len(Ys))
+
+        self.model.train()
+
+        return {'sum': sum_loss / steps, "acc": acc}
+
+    def get_validation_loss(self):
+        if not self.transformer.validation_loss:
+            self.transformer.validation_loss = {}
+        return self.transformer.validation_loss[self.epoch_id]
+
+
 class ValidationMonitor(Callback):
     def __init__(self, data_dir, loader_mode, epoch_every=None, batch_every=None):
         super().__init__()
@@ -670,16 +738,9 @@ def postprocessing_pipeline_simplified(cache_dirpath, loader_mode):
                    input_steps=[binarizer],
                    adapter=Adapter({'images': E(binarizer.name, 'binarized_images'),
                                     }))
-    bounding_boxer = Step(name='bounding_boxer',
-                          transformer=make_apply_transformer(masks_to_bounding_boxes,
-                                                             output_name='labeled_images',
-                                                             apply_on=['images']),
-                          input_steps=[labeler],
-                          adapter=Adapter({'images': E(labeler.name, 'labeled_images'),
-                                           }))
 
-    bounding_boxer.set_mode_inference()
-    bounding_boxer.set_parameters_upstream({'experiment_directory': cache_dirpath,
+    labeler.set_mode_inference()
+    labeler.set_parameters_upstream({'experiment_directory': cache_dirpath,
                                             'is_fittable': False
                                             })
-    return bounding_boxer
+    return labeler

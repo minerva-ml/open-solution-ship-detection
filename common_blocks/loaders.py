@@ -64,7 +64,9 @@ class BalancedSubsetSampler(Sampler):
         return self.sample_size
 
     def _get_indices(self, sample):
-        return sample if self.shuffle else np.sort(sample)
+        if self.shuffle:
+            np.random.shuffle(sample)
+        return sample
 
     def _get_sample(self):
         empty_count = int(self.empty_fraction * self.sample_size)
@@ -472,6 +474,162 @@ class TestTimeAugmentationAggregator(BaseTransformer):
         with mp.pool.ThreadPool(threads) as executor:
             averages_images = executor.map(_aggregate_augmentations, unique_img_ids)
         return {'aggregated_prediction': averages_images}
+
+
+class OneClassImageClassificationDataset(Dataset):
+    def __init__(self,
+                 X,
+                 y,
+                 image_transform=None,
+                 fixed_resize=300,
+                 path_column='file_path_image',
+                 target_column='is_not_empty',
+                 train_mode=True,
+                 image_augment=None):
+        super().__init__()
+
+        self.X = X
+        if y is not None:
+            self.y = y
+        else:
+            self.y = None
+        self.image_transform = image_transform
+        self.image_augment = image_augment
+        self.train_mode = train_mode
+        self.fixed_resize = fixed_resize
+        self.path_column = path_column
+        self.target_column = target_column
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, index):
+        try:
+            Xi = self.load_from_disk(index)
+        except Exception as e:
+            print(e)
+            print("Failed loading image {}".format(index))
+            index = 0
+            Xi = self.load_from_disk(index)
+
+        if self.fixed_resize:
+            Xi = transforms.Resize((self.fixed_resize, self.fixed_resize))(Xi)
+        if self.train_mode or self.y is not None:
+            yi = self.load_target(index)
+            if self.image_augment is not None:
+                Xi = self.augment(self.image_augment, Xi)
+            return Xi, yi
+        else:
+            return Xi
+
+    def augment(self, augmenter, image):
+        augmenter = augmenter.to_deterministic()
+        img_aug = augmenter.augment_image(np.array(image))
+        img_aug = Image.fromarray(img_aug)
+        return img_aug
+
+    def load_from_disk(self, index):
+        image_path = self.X[index]
+        return self.load_image(image_path)
+
+    def load_target(self, index):
+        label = self.y[index]
+
+        return label
+
+    def load_image(self, img_filepath, grayscale=False):
+        image = Image.open(img_filepath, 'r')
+        if not grayscale:
+            image = image.convert('RGB')
+        else:
+            image = image.convert('L')
+        return image
+
+    def align_images(self, images):
+        max_h, max_w = 0, 0
+        min_h, min_w = 1e10, 1e10
+        for image in images:
+            w, h = image.size
+            max_h, max_w = max(h, max_h), max(w, max_w)
+            min_h, min_w = min(h, min_h), min(w, min_w)
+        resize = transforms.Resize((max_h, max_w))
+        allinged_images = []
+        for image in images:
+            allinged_images.append(resize(image))
+
+        return allinged_images
+
+    def collate_fn(self, batch):
+        """Encode targets.
+        Args:
+          batch: (list) of images, bbox_targets, clf_targets.
+        Returns:
+          images, stacked bbox_targets, stacked clf_targets.
+        """
+
+        if self.train_mode or self.y is not None:
+            imgs = [x[0] for x in batch]
+            labels = [int(x[1]) for x in batch]
+            imgs = [self.image_transform(img) for img in imgs]
+            return torch.stack(imgs), torch.FloatTensor(labels)
+
+        else:
+            imgs = [self.image_transform(img) for img in batch]
+            return torch.stack(imgs)
+
+
+class OneClassImageClassificatioLoader(BaseTransformer):
+    def __init__(self, train_mode, loader_params, dataset_params, augmentation_params):
+        super().__init__()
+        self.train_mode = train_mode
+        self.loader_params = AttrDict(loader_params)
+        self.dataset_params = AttrDict(dataset_params)
+        self.augmentation_params = AttrDict(augmentation_params)
+        self.dataset = OneClassImageClassificationDataset
+
+        self.image_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=self.dataset_params.MEAN, std=self.dataset_params.STD),
+        ])
+
+    def transform(self, X, y=None, X_valid=None, y_valid=None, **kwargs):
+        if self.train_mode and y is not None:
+            flow, steps = self.get_datagen(X, y, True, self.loader_params.training)
+        else:
+            flow, steps = self.get_datagen(X, None, False, self.loader_params.inference)
+
+        if X_valid is not None and y_valid is not None:
+            valid_flow, valid_steps = self.get_datagen(X_valid, y_valid, False, self.loader_params.inference)
+        else:
+            valid_flow = None
+            valid_steps = None
+
+        return {'datagen': (flow, steps),
+                'validation_datagen': (valid_flow, valid_steps)}
+
+    def get_datagen(self, X, y, train_mode, loader_params):
+        if train_mode:
+
+            sampler = BalancedSubsetSampler(data_source=y,
+                                            data_size=len(y),
+                                            sample_size=self.dataset_params.sample_size,
+                                            empty_fraction=self.dataset_params.sns_empty_fraction,
+                                            shuffle=True)
+            dataset = self.dataset(X, y,
+                                   train_mode=True,
+                                   fixed_resize=self.dataset_params.h,
+                                   image_transform=self.image_transform)
+
+            datagen = DataLoader(dataset, collate_fn=dataset.collate_fn, **loader_params, sampler=sampler)
+        else:
+            dataset = self.dataset(X, y,
+                                   train_mode=False,
+                                   fixed_resize=self.dataset_params.h,
+                                   image_transform=self.image_transform)
+            datagen = DataLoader(dataset, collate_fn=dataset.collate_fn, **loader_params)
+
+        steps = len(datagen)
+        return datagen, steps
 
 
 def aggregate_augmentations(img_id, images, tta_params, tta_inverse_transform, img_ids, agg_method):

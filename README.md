@@ -25,6 +25,7 @@ In this open source solution you will find references to the [neptune.ml](https:
 | link to code | CV | LB |
 |:---:|:---:|:---:|
 |solution 1|0.541|0.573|
+|solution 2|0.661|0.679|
 
 ## Start experimenting with ready-to-use code
 You can jump start your participation in the competition by using our starter pack. Installation instruction below will guide you through the setup.

@@ -1,3 +1,7 @@
+from copy import deepcopy
+
+import torch
+from torch.autograd import Variable
 from torch import nn
 import torchvision
 import pretrainedmodels
@@ -93,11 +97,12 @@ class SeResNetXtEncoders(nn.Module):
             self.encoder = pretrainedmodels.__dict__['se_resnext101_32x4d'](num_classes=1000, pretrained=pretrained)
         else:
             raise NotImplementedError('only 50, 101 version of Resnet are implemented')
+
         if pool0:
             self.conv1 = nn.Sequential(self.encoder.layer0.conv1,
                                        self.encoder.layer0.bn1,
                                        self.encoder.layer0.relu1,
-                                       self.encoder.layer0.pool0)
+                                       self.encoder.layer0.pool)
         else:
             self.conv1 = nn.Sequential(self.encoder.layer0.conv1,
                                        self.encoder.layer0.bn1,
@@ -162,3 +167,14 @@ class DenseNetEncoders(nn.Module):
         encoder5 = self.encoder5(transition3)
 
         return encoder2, encoder3, encoder4, encoder5
+
+
+def get_encoder_channel_nr(encoder):
+    encoder_clone = deepcopy(encoder)
+    x = Variable(torch.ones((1, 3, 256, 256)))
+    if torch.cuda.is_available():
+        encoder_clone = encoder_clone.cuda()
+        x = x.cuda()
+    encoder2, encoder3, encoder4, encoder5 = encoder_clone(x)
+    encoder_channel_nr = [encoder2.shape[1], encoder3.shape[1], encoder4.shape[1], encoder5.shape[1]]
+    return encoder_channel_nr
