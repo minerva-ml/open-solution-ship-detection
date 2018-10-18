@@ -1,7 +1,7 @@
 #project: USERNAME/PROJECT
 
 name: airbus_ships_challenge
-tags: [solution-2]
+tags: [solution-3]
 
 metric:
   channel: 'f2'
@@ -31,20 +31,20 @@ parameters:
 
   # Execution
   num_workers: 4
-  num_threads: 4
+  num_threads: 300
   image_source: disk
   pin_memory: 1
   loader_mode: resize
   resize_target_size: 256
   pad_method: symmetric
   target_format: 'joblib'
-  dev_mode_size: 500
+  dev_mode_size: 100
 
   # General parameters
   image_h: 256
   image_w: 256
   image_channels: 3
-  training_sampler_size: 2500
+  training_sampler_size: 7500
   training_sampler_empty_fraction: 0.0
   evaluation_size: 10000
   evaluation_empty_fraction: 0.52
@@ -55,7 +55,7 @@ parameters:
   network_output_channels: 2
   network_activation: 'sigmoid'
   architecture: LargeKernelMatters
-  encoder: ResNet
+  encoder: DenseNet
 
   # Training schedule
   epochs_nr: 1000
@@ -70,6 +70,9 @@ parameters:
   reduce_factor: 0.5
   reduce_patience: 5
   min_lr: 0
+  use_one_cycle: 0
+  one_cycle_number_of_batches_per_full_cycle: 10000
+  one_cycle_max_lr: 0.0001
 
   # Regularization
   use_batch_norm: 1
@@ -78,28 +81,35 @@ parameters:
   # Postprocessing
   threshold_masks: 0.5
   tta_aggregation_method: mean
+  postpro__drop_size: 50
+  postpro__mid_min_size: 50
+  postpro__mid_max_size: 1000
 
   # -------------------- SNS (SHIP NO SHIP) ----------------------
 
-  # General parameters
-  sns_training_sampler_empty_fracion: 0.52
-
   # Network parameters
-  sns_architecture: BinaryResnet101
+  sns_architecture: Densenet
 
   # Training schedule
+  sns_training_sampler_empty_fracion: 0.52
   sns_epochs_nr: 100
-  sns_batch_size_train: 32
-  sns_batch_size_inference: 32
-  sns_lr: 0.001
+  sns_batch_size_train: 64
+  sns_batch_size_inference: 64
+  sns_lr: 0.0001
   sns_momentum: 0.9
   sns_gamma: 0.95
   sns_patience: 5
   sns_validation_metric_name: 'sum'
-  sns_minimize_validation_metric_name: 0
+  sns_minimize_validation_metric_name: 'sum'
+  sns_minimize_validation_metric: 1
   sns_reduce_factor: 0.5
   sns_reduce_patience: 10
   sns_min_lr: 0
+  sns_use_one_cycle: 1
+  sns_one_cycle_number_of_batches_per_full_cycle: 10000
+  sns_one_cycle_max_lr: 0.0001
+  sns_image_h: 224
+  sns_image_w: 224
 
 
   # Regularization
@@ -108,5 +118,3 @@ parameters:
 
   # Postprocessing
   sns_threshold: 0.5
-
-

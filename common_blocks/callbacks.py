@@ -11,16 +11,15 @@ from steppy.adapter import Adapter, E
 from steppy.base import Step
 from toolkit.pytorch_transformers.utils import Averager, persist_torch_model
 from toolkit.pytorch_transformers.validation import score_model
-from torch import nn
 from torch.autograd import Variable
 from torch.autograd import Variable as V
 from torch.optim.lr_scheduler import ExponentialLR, ReduceLROnPlateau
 
 from common_blocks.utils.io import read_masks
-from common_blocks.utils.misc import get_list_of_image_predictions, get_logger, make_apply_transformer, sigmoid, softmax
+from common_blocks.utils.misc import OneCycle, get_list_of_image_predictions, get_logger, make_apply_transformer, \
+    sigmoid, softmax
 from .metrics import intersection_over_union_thresholds
-
-from .postprocessing import crop_image, resize_image, binarize, label
+from .postprocessing import binarize, label, resize_image
 
 logger = get_logger()
 
@@ -358,8 +357,7 @@ class NeptuneMonitor(Callback):
                 self.epoch_loss_averagers[name] = Averager()
                 self.epoch_loss_averagers[name].send(loss)
 
-            self.ctx.channel_send('{} batch {} loss'.format(self.model_name, name), x=self.batch_id, y=loss)
-
+            self.ctx.channel_send(name, loss)
         self.batch_id += 1
 
     def on_epoch_end(self, *args, **kwargs):
@@ -447,16 +445,20 @@ class SNS_ValidationMonitor(Callback):
         self.model = transformer.model
         self.loss_function = transformer.loss_function
 
+    def on_batch_end(self, metrics, *args, **kwargs):
+        for name, loss in metrics.items():
+            loss = loss.data.cpu().numpy()[0]
+            self.ctx.channel_send(name, loss)
+
     def on_epoch_end(self, *args, **kwargs):
         self.model.eval()
         self.epoch_id += 1
         self.validation_loss = self.calculate_epoch_end_metrics()
-        epoch_end_loss = self.validation_loss['sum'][0]
+        epoch_end_loss = self.validation_loss['sum']
         epoch_end_acc = self.validation_loss['acc']
 
         self.transformer.validation_loss[self.epoch_id] = {'acc': V(torch.Tensor([epoch_end_acc])),
                                                            'sum': V(torch.Tensor([float(epoch_end_loss)]))}
-
         logger.info('epoch {0} ship no ship epoch end validation loss: {1}'.format(self.epoch_id, epoch_end_loss))
         logger.info('epoch {0} ship no ship epoch end accuracy: {1}'.format(self.epoch_id, epoch_end_acc))
         self.ctx.channel_send("ship_no_ship_epoch_end_acc", epoch_end_acc)
@@ -475,14 +477,13 @@ class SNS_ValidationMonitor(Callback):
                 X, y = X.cuda(), y.cuda()
 
             y_pred = self.model(X)
-            for name, lossfunc, weight in self.loss_function:
-                loss = lossfunc(y, y_pred.squeeze()).sigmoid()
-
+            loss_val = self.loss_function[0][1](y_pred, y.long())
+            y_pred = y_pred.max(1)[1]
             y_pred = y_pred.data.cpu().numpy().astype(int).ravel()
             y = y.data.cpu().numpy()
-            sum_loss += loss.data.cpu().numpy()
             Ys.append(y)
             Ypreds.append(y_pred)
+            sum_loss += loss_val.data.cpu().numpy()
 
         Ys = np.concatenate(Ys)
         Ypreds = (np.concatenate(Ypreds) > 0.5).astype(int)
@@ -666,9 +667,38 @@ class ModelCheckpoint(Callback):
         self.epoch_id += 1
 
 
+class OneCycleCallback(Callback):
+    def __init__(self, number_of_batches_per_full_cycle, max_lr,enabled=1, momentum_range=(0.95, 0.8), prcnt_annihilate=10,
+                 div=10):
+        super().__init__()
+
+        self.enabled = enabled
+        self.number_of_batches_per_full_cycle = number_of_batches_per_full_cycle
+        self.max_lr = max_lr
+        self.momentum_range = momentum_range
+        self.prcnt_annihilate = prcnt_annihilate
+        self.div = div
+        self.ctx = neptune.Context()
+
+    def set_params(self, transformer, validation_datagen, *args, **kwargs):
+        super().set_params(transformer, validation_datagen)
+        self.optimizer = transformer.optimizer
+        self.onecycle = OneCycle(self.number_of_batches_per_full_cycle,
+                                 max_lr=self.max_lr,
+                                 optimizer=self.optimizer,
+                                 prcnt=self.prcnt_annihilate,
+                                 div=self.div
+                                 )
+
+    def on_batch_end(self, *args, **kwargs):
+        if self.enabled:
+            lr, mom = self.onecycle.batch_step()
+            self.ctx.channel_send("lr", lr)
+            self.ctx.channel_send("momentum", mom)
+
+
 class EarlyStopping(Callback):
     def __init__(self, metric_name='sum', patience=1000, minimize=True):
-        super().__init__()
         self.patience = patience
         self.minimize = minimize
         self.best_score = None
@@ -741,6 +771,6 @@ def postprocessing_pipeline_simplified(cache_dirpath, loader_mode):
 
     labeler.set_mode_inference()
     labeler.set_parameters_upstream({'experiment_directory': cache_dirpath,
-                                            'is_fittable': False
-                                            })
+                                     'is_fittable': False
+                                     })
     return labeler

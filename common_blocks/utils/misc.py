@@ -1,5 +1,7 @@
+from itertools import product
+import multiprocessing as mp
+
 import logging
-import os
 import pathlib
 import random
 import sys
@@ -9,6 +11,7 @@ import math
 
 import numpy as np
 import pandas as pd
+from PIL import Image
 import torch
 import matplotlib.pyplot as plt
 from attrdict import AttrDict
@@ -18,7 +21,8 @@ from steppy.base import Step, BaseTransformer
 from steppy.utils import get_logger as get_steppy_logger
 import yaml
 
-from .masks import rle_from_mask
+from .masks import rle_from_mask, run_length_decoding
+
 import os
 
 NEPTUNE_CONFIG_PATH = os.environ.get('NEPTUNE_CONFIG_PATH',
@@ -72,7 +76,7 @@ def create_submission(image_ids, predictions):
             rle_encoded = ' '.join(str(rle) for rle in rle_from_mask(mask_label))
             output.append([image_id, rle_encoded])
         if mask.max() == 0:
-            output.append([image_id, None])
+            output.append([image_id, np.nan])
 
     submission = pd.DataFrame(output, columns=['ImageId', 'EncodedPixels'])
     return submission
@@ -86,7 +90,7 @@ def get_ship_no_ship_ids(image_ids, prediction):
 
 def combine_two_stage_predictions(ids_no_ship, prediction_ship, ordered_ids):
     prediction_no_ship = pd.DataFrame({'ImageId': ids_no_ship})
-    prediction_no_ship['EncodedPixels'] = None
+    prediction_no_ship['EncodedPixels'] = np.nan
 
     prediction_ship.reset_index(drop=True, inplace=True)
     prediction_no_ship.reset_index(drop=True, inplace=True)
@@ -94,6 +98,15 @@ def combine_two_stage_predictions(ids_no_ship, prediction_ship, ordered_ids):
     prediction = pd.concat([prediction_ship, prediction_no_ship], axis=0)
 
     return prediction[prediction['ImageId'].isin(ordered_ids)]
+
+
+def prepare_results(ground_truth, prediction, meta, f2, image_ids):
+    f2_with_id = pd.DataFrame({'f2': f2, 'ImageId': image_ids})
+    meta['ImageId'] = meta['id'] + '.jpg'
+    scores_merged = pd.merge(ground_truth, prediction, on='ImageId', suffixes=['_gt', '_pred'])
+    results = pd.merge(meta, scores_merged, on='ImageId')
+    results = pd.merge(results, f2_with_id, on='ImageId')
+    return results
 
 
 def generate_data_frame_chunks(meta, chunk_size):
@@ -226,6 +239,16 @@ def get_list_of_image_predictions(batch_predictions):
     return image_predictions
 
 
+def relabel(img):
+    relabeled_img = np.zeros_like(img)
+    for i, k in enumerate(np.unique(img)):
+        if k == 0:
+            continue
+        else:
+            relabeled_img = np.where(img == k, i, relabeled_img)
+    return relabeled_img
+
+
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -256,6 +279,31 @@ def plot_list(images=None, labels=None):
         axs[n_img + j].set_xticks([])
         axs[n_img + j].set_yticks([])
     plt.show()
+
+
+def plot_results_for_id(results, idx):
+    results_per_image = results[results['ImageId'] == idx]
+    file_path_image = results_per_image.file_path_image.values[0]
+    image = np.array(Image.open(file_path_image)).astype(np.uint8)
+    ground_truth_image = np.zeros((image.shape[:2]))
+    prediction_image = np.zeros((image.shape[:2]))
+
+    ground_truth_rle = results_per_image.EncodedPixels_gt.unique()
+    prediction_rle = results_per_image.EncodedPixels_pred.unique()
+
+    for i, gt in enumerate(ground_truth_rle):
+        if isinstance(gt, float):
+            continue
+        obj_mask = run_length_decoding(gt)
+        ground_truth_image = np.where(obj_mask, i + 1, ground_truth_image)
+
+    for i, pred in enumerate(prediction_rle):
+        if isinstance(pred, float):
+            continue
+        obj_mask = run_length_decoding(pred)
+        prediction_image = np.where(obj_mask, i + 1, prediction_image)
+
+    plot_list(images=[image], labels=[ground_truth_image, prediction_image])
 
 
 class FineTuneStep(Step):
@@ -334,19 +382,18 @@ class FineTuneStep(Step):
         return step_output_data
 
 
-def make_apply_transformer(func, output_name='output', apply_on=None):
+def make_apply_transformer(func, output_name='output', apply_on=None, n_threads=1):
     class StaticApplyTransformer(BaseTransformer):
         def transform(self, *args, **kwargs):
             self.check_input(*args, **kwargs)
-
             if not apply_on:
-                iterator = zip(*args, *kwargs.values())
+                iterator = list(zip(*args, *kwargs.values()))
             else:
-                iterator = zip(*args, *[kwargs[key] for key in apply_on])
+                iterator = list(zip(*args, *[kwargs[key] for key in apply_on]))
 
-            output = []
-            for func_args in tqdm(iterator, total=self.get_arg_length(*args, **kwargs)):
-                output.append(func(*func_args))
+            n_jobs = np.minimum(n_threads, len(iterator))
+            with mp.pool.ThreadPool(n_jobs) as executor:
+                output = list(tqdm(executor.imap(lambda p: func(*p), iterator), total=len(iterator)))
             return {output_name: output}
 
         @staticmethod
@@ -382,3 +429,99 @@ def make_apply_transformer(func, output_name='output', apply_on=None):
                     return arg_length
 
     return StaticApplyTransformer()
+
+
+class OneCycle(object):
+    """
+    In paper (https://arxiv.org/pdf/1803.09820.pdf), author suggests to do one cycle during
+    whole run with 2 steps of equal length. During first step, increase the learning rate
+    from lower learning rate to higher learning rate. And in second step, decrease it from
+    higher to lower learning rate. This is Cyclic learning rate policy. Author suggests one
+    addition to this. - During last few hundred/thousand iterations of cycle reduce the
+    learning rate to 1/100th or 1/1000th of the lower learning rate.
+    Also, Author suggests that reducing momentum when learning rate is increasing. So, we make
+    one cycle of momentum also with learning rate - Decrease momentum when learning rate is
+    increasing and increase momentum when learning rate is decreasing.
+    Args:
+
+        nb              Total number of iterations including all epochs
+        max_lr          The optimum learning rate. This learning rate will be used as highest
+                        learning rate. The learning rate will fluctuate between max_lr to
+                        max_lr/div and then (max_lr/div)/div.
+        momentum_vals   The maximum and minimum momentum values between which momentum will
+                        fluctuate during cycle.
+                        Default values are (0.95, 0.85)
+        prcnt           The percentage of cycle length for which we annihilate learning rate
+                        way below the lower learnig rate.
+                        The default value is 10
+        div             The division factor used to get lower boundary of learning rate. This
+                        will be used with max_lr value to decide lower learning rate boundary.
+                        This value is also used to decide how much we annihilate the learning
+                        rate below lower learning rate.
+                        The default value is 10.
+    """
+
+    def __init__(self, nb, max_lr, optimizer=None, momentum_vals=(0.95, 0.85), prcnt=10, div=10):
+        self.nb = nb
+        self.div = div
+        self.step_len = int(self.nb * (1 - prcnt / 100) / 2)
+        self.high_lr = max_lr
+        self.low_mom = momentum_vals[1]
+        self.high_mom = momentum_vals[0]
+        self.prcnt = prcnt
+        self.iteration = 0
+        self.lrs = []
+        self.moms = []
+        self.optimizer = optimizer
+
+    def batch_step(self):
+        if self.optimizer is None:
+            raise ValueError("""
+            Can you have to provide an optimizer otherwise 
+            you can only use calc_lr anc calc_mom methods""")
+
+        lr, mom = self.calc()
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+            param_group['mom'] = mom
+
+        return lr, mom
+
+    def calc(self):
+        self.iteration += 1
+        lr = self.calc_lr()
+        mom = self.calc_mom()
+        return (lr, mom)
+
+    def calc_lr(self):
+        if self.iteration == self.nb:
+            self.iteration = 0
+            self.lrs.append(self.high_lr / self.div)
+            return self.high_lr / self.div
+        if self.iteration > 2 * self.step_len:
+            ratio = (self.iteration - 2 * self.step_len) / (self.nb - 2 * self.step_len)
+            lr = self.high_lr * (1 - 0.99 * ratio) / self.div
+        elif self.iteration > self.step_len:
+            ratio = 1 - (self.iteration - self.step_len) / self.step_len
+            lr = self.high_lr * (1 + ratio * (self.div - 1)) / self.div
+        else:
+            ratio = self.iteration / self.step_len
+            lr = self.high_lr * (1 + ratio * (self.div - 1)) / self.div
+        self.lrs.append(lr)
+        return lr
+
+    def calc_mom(self):
+        if self.iteration == self.nb:
+            self.iteration = 0
+            self.moms.append(self.high_mom)
+            return self.high_mom
+        if self.iteration > 2 * self.step_len:
+            mom = self.high_mom
+        elif self.iteration > self.step_len:
+            ratio = (self.iteration - self.step_len) / self.step_len
+            mom = self.low_mom + ratio * (self.high_mom - self.low_mom)
+        else:
+            ratio = self.iteration / self.step_len
+            mom = self.high_mom - ratio * (self.high_mom - self.low_mom)
+        self.moms.append(mom)
+        return mom

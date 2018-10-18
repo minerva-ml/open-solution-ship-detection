@@ -7,7 +7,6 @@ torch==0.3.1
 attrdict==2.0.0
 scipy==1.0.0
 scikit_image==0.13.1
-torchvision==0.2.0
 numpy==1.14.0
 imgaug==0.2.5
 neptune-cli
@@ -19,3 +18,5 @@ pycocotools==2.0.0
 steppy==0.1.14
 steppy-toolkit==0.1.12
 pretrainedmodels==0.7.0
+torchvision==0.2.0
+

@@ -77,14 +77,19 @@ def intersection_over_union_thresholds(y_true, y_pred):
     return np.mean(iouts)
 
 
-def f_beta_metric(gt, prediction, beta=2):
-    f_betas = []
+def f_beta_metric(gt, prediction, beta=2, apply_mean=True):
+    f_betas, image_ids = [], []
     check_ids(gt, prediction)
     for image_id in gt['ImageId'].unique():
         y_t = get_overlayed_mask(gt.query('ImageId==@image_id'), ORIGINAL_SIZE, labeled=True)
         y_p = get_overlayed_mask(prediction.query('ImageId==@image_id'), ORIGINAL_SIZE, labeled=True)
-        f_betas.append(compute_eval_metric_per_image(y_t, y_p, "f{}".format(beta)))
-    return np.mean(f_betas)
+        f_beta = compute_eval_metric_per_image(y_t, y_p, "f{}".format(beta))
+        f_betas.append(f_beta)
+        image_ids.append(image_id)
+    if apply_mean:
+        return np.mean(f_betas)
+    else:
+        return f_betas, image_ids
 
 
 def check_ids(gt, prediction):

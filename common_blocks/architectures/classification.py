@@ -1,16 +1,13 @@
 import torch.nn as nn
-from torchvision.models import resnet101
+import pretrainedmodels
 
-
-class Resnet101(nn.Module):
+class Densenet(nn.Module):
     def __init__(self, pretrained):
         super().__init__()
-        self.model = resnet101(pretrained=pretrained)
-        for p in self.model.parameters():
-            p.requires_grad = False
-        self.model.fc = nn.Linear(in_features=self.model.fc.in_features, out_features=1)
-        self.model.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.features = pretrainedmodels.__dict__['densenet201'](num_classes=1000, pretrained=pretrained)
+        self.classifier = nn.Linear(in_features=1000, out_features=2)
 
     def forward(self, input):
-        x = self.model(input)
-        return x.squeeze()
+        x = self.features(input)
+        x = self.classifier(x)
+        return x

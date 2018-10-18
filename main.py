@@ -1,19 +1,20 @@
-from functools import partial
 import os
 import shutil
+from functools import partial
 
-from attrdict import AttrDict
 import neptune
+import numpy as np
 import pandas as pd
-from steppy.base import Step, IdentityOperation
+from attrdict import AttrDict
 from steppy.adapter import Adapter, E
+from steppy.base import IdentityOperation, Step
 
 from common_blocks import augmentation as aug
 from common_blocks import metrics
 from common_blocks import models
 from common_blocks import pipelines
-from common_blocks.utils import misc, io
 from common_blocks import postprocessing
+from common_blocks.utils import io, misc
 
 CTX = neptune.Context()
 LOGGER = misc.init_logger()
@@ -58,6 +59,7 @@ Y_COLUMN = 'file_path_mask'
 CONFIG = AttrDict({
     'execution': {'experiment_dir': EXPERIMENT_DIR,
                   'num_workers': PARAMS.num_workers,
+                  'num_threads': PARAMS.num_threads
                   },
     'general': {'img_H-W': (PARAMS.image_h, PARAMS.image_w),
                 'loader_mode': PARAMS.loader_mode,
@@ -74,6 +76,9 @@ CONFIG = AttrDict({
     },
     'loaders': {'resize': {'dataset_params': {'h': PARAMS.image_h,
                                               'w': PARAMS.image_w,
+                                              'sns_h': PARAMS.sns_image_h,
+                                              'sns_w': PARAMS.sns_image_w,
+
                                               'image_source': PARAMS.image_source,
                                               'target_format': PARAMS.target_format,
                                               'empty_fraction': PARAMS.training_sampler_empty_fraction,
@@ -159,6 +164,15 @@ CONFIG = AttrDict({
                 'epoch_every': 1,
                 'metric_name': PARAMS.validation_metric_name,
                 'minimize': PARAMS.minimize_validation_metric},
+                "one_cycle_scheduler": {
+
+                    "enabled": PARAMS.use_one_cycle,
+                    "number_of_batches_per_full_cycle": PARAMS.one_cycle_number_of_batches_per_full_cycle,
+                    "max_lr": PARAMS.one_cycle_max_lr,
+                    "momentum_range": (0.95, 0.8),
+                    "prcnt_annihilate": 10,
+                    "div": 10
+                },
                 'exponential_lr_scheduler': {'gamma': PARAMS.gamma,
                                              'epoch_every': 1},
                 'reduce_lr_on_plateau_scheduler': {'metric_name': PARAMS.validation_metric_name,
@@ -203,11 +217,21 @@ CONFIG = AttrDict({
                 'filepath': os.path.join(EXPERIMENT_DIR, 'checkpoints', 'ship_no_ship_network', 'best.torch'),
                 'epoch_every': 1,
                 'metric_name': PARAMS.sns_validation_metric_name,
-                'minimize': PARAMS.minimize_validation_metric},
+                'minimize': PARAMS.sns_minimize_validation_metric
+            },
+                "one_cycle_scheduler": {
+
+                    "enabled": PARAMS.sns_use_one_cycle,
+                    "number_of_batches_per_full_cycle": PARAMS.sns_one_cycle_number_of_batches_per_full_cycle,
+                    "max_lr": PARAMS.sns_one_cycle_max_lr,
+                    "momentum_range": (0.95, 0.7),
+                    "prcnt_annihilate": 10,
+                    "div": 10
+                },
                 'exponential_lr_scheduler': {'gamma': PARAMS.gamma,
                                              'epoch_every': 1},
                 'reduce_lr_on_plateau_scheduler': {'metric_name': PARAMS.sns_validation_metric_name,
-                                                   'minimize': PARAMS.minimize_validation_metric,
+                                                   'minimize': PARAMS.sns_minimize_validation_metric,
                                                    'reduce_factor': PARAMS.reduce_factor,
                                                    'reduce_patience': PARAMS.reduce_patience,
                                                    'min_lr': PARAMS.min_lr},
@@ -338,7 +362,9 @@ def inference_segmentation_pipeline(config):
         mask_resize = Step(name='mask_resize',
                            transformer=misc.make_apply_transformer(size_adjustment_function,
                                                                    output_name='resized_images',
-                                                                   apply_on=['images']),
+                                                                   apply_on=['images'],
+                                                                   n_threads=config.execution.num_threads,
+                                                                   ),
                            input_steps=[prediction_renamed],
                            adapter=Adapter({'images': E(prediction_renamed.name, 'mask_prediction'),
                                             }))
@@ -356,16 +382,21 @@ def inference_segmentation_pipeline(config):
 
                            transformer=misc.make_apply_transformer(size_adjustment_function,
                                                                    output_name='resized_images',
-                                                                   apply_on=['images']),
+                                                                   apply_on=['images'],
+                                                                   n_threads=config.execution.num_threads,
+                                                                   ),
                            input_steps=[segmentation_network],
                            adapter=Adapter({'images': E(segmentation_network.name, 'mask_prediction'),
-                                            }))
+                                            }),
+                           )
 
     binarizer = Step(name='binarizer',
                      transformer=misc.make_apply_transformer(
                          partial(postprocessing.binarize, threshold=config.thresholder.threshold_masks),
                          output_name='binarized_images',
-                         apply_on=['images']),
+                         apply_on=['images'],
+                         n_threads=config.execution.num_threads
+                     ),
                      input_steps=[mask_resize],
                      adapter=Adapter({'images': E(mask_resize.name, 'resized_images'),
                                       }))
@@ -373,17 +404,28 @@ def inference_segmentation_pipeline(config):
     labeler = Step(name='labeler',
                    transformer=misc.make_apply_transformer(postprocessing.label,
                                                            output_name='labeled_images',
-                                                           apply_on=['images']),
+                                                           apply_on=['images'],
+                                                           n_threads=config.execution.num_threads,
+                                                           ),
                    input_steps=[binarizer],
                    adapter=Adapter({'images': E(binarizer.name, 'binarized_images'),
                                     }))
+    mask_postprocessing = Step(name='mask_postprocessing',
+                               transformer=misc.make_apply_transformer(postprocessing.mask_postprocessing,
+                                                                       output_name='labeled_images',
+                                                                       apply_on=['images'],
+                                                                       n_threads=config.execution.num_threads,
+                                                                       ),
+                               input_steps=[labeler],
+                               adapter=Adapter({'images': E(labeler.name, 'labeled_images'),
+                                                }))
 
-    labeler.set_mode_inference()
-    labeler.set_parameters_upstream({'experiment_directory': config.execution.experiment_dir,
-                                     'is_fittable': False
-                                     })
+    mask_postprocessing.set_mode_inference()
+    mask_postprocessing.set_parameters_upstream({'experiment_directory': config.execution.experiment_dir,
+                                                 'is_fittable': False
+                                                 })
     segmentation_network.is_fittable = True
-    return labeler
+    return mask_postprocessing
 
 
 #   __________   ___  _______   ______  __    __  .___________. __    ______   .__   __.
@@ -402,6 +444,9 @@ def train_ship_no_ship():
                                                                                    empty_fraction=PARAMS.evaluation_empty_fraction,
                                                                                    test_size=PARAMS.evaluation_size,
                                                                                    shuffle=True, random_state=SEED)
+
+    meta_train_split = meta_train_split.sample(frac=1, random_state=SEED)
+    meta_valid_split = meta_valid_split.sample(frac=1, random_state=SEED)
 
     if DEV_MODE:
         meta_train_split = meta_train_split.sample(PARAMS.dev_mode_size, random_state=SEED)
@@ -468,9 +513,15 @@ def evaluate():
         prediction = generate_submission(meta_valid_split, segm_pipe, CHUNK_SIZE)
 
     gt = io.read_gt_subset(PARAMS.annotation_file, valid_ids)
-    f2 = metrics.f_beta_metric(gt, prediction, beta=2)
+    f2_per_image, image_ids = metrics.f_beta_metric(gt, prediction, beta=2, apply_mean=False)
+    f2 = np.mean(f2_per_image)
     LOGGER.info('f2 {}'.format(f2))
     CTX.channel_send('f2', 0, f2)
+
+    LOGGER.info('preparing results')
+    results = misc.prepare_results(gt, prediction, meta_valid_split, f2_per_image, image_ids)
+    results_filepath = os.path.join(EXPERIMENT_DIR, 'validation_results.csv')
+    results.to_csv(results_filepath, index=None)
 
 
 def predict():
@@ -588,4 +639,3 @@ if __name__ == '__main__':
     train()
     evaluate()
     predict()
-

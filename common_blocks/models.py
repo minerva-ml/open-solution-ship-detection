@@ -6,7 +6,7 @@ import torch.optim as optim
 from toolkit.pytorch_transformers.models import Model
 from torch.autograd import Variable
 
-from common_blocks.architectures.classification import Resnet101
+from common_blocks.architectures.classification import  Densenet
 from common_blocks.utils.misc import get_list_of_image_predictions, sigmoid, softmax
 from .architectures import encoders, unet, large_kernel_matters, pspnet
 from . import callbacks as cbk
@@ -25,15 +25,14 @@ ENCODERS = {'ResNet': {'model': encoders.ResNetEncoders,
                                             }
                            },
             'DenseNet': {'model': encoders.DenseNetEncoders,
-                         'model_config': {'encoder_depth': 121, 'pretrained': 'imagenet', 'pool0': True
+                         'model_config': {'encoder_depth': 201, 'pretrained': 'imagenet', 'pool0': True
                                           }
                          },
             }
 
 ARCHITECTURES = {'UNet': {'model': unet.UNet,
                           'model_config': {'use_hypercolumn': False, 'dropout_2d': 0.0, 'pool0': True
-                                           },
-                          'init_weights': False},
+                                           }},
                  'LargeKernelMatters': {'model': large_kernel_matters.LargeKernelMatters,
                                         'model_config': {'kernel_size': 9, 'internal_channels': 21,
                                                          'dropout_2d': 0.0, 'use_relu': True, 'pool0': True
@@ -46,11 +45,9 @@ ARCHITECTURES = {'UNet': {'model': unet.UNet,
                  }
 
 SNS_ARCHITECTURES = {
-    "BinaryResnet101": {'model': Resnet101,
-                        'model_config': {'pretrained': True},
-
-                        'init_weights': False}
-}
+    "Densenet": {'model': Densenet,
+                 'model_config': {'pretrained': 'imagenet'}
+                 }}
 
 
 class SegmentationModel(Model):
@@ -232,7 +229,6 @@ class BinaryModel(SegmentationModel):
         self.optimizer = optim.Adam(self.weight_regularization(self.model, **architecture_config['regularizer_params']),
                                     **architecture_config['optimizer_params'])
 
-        self.loss_function = [('ship_no_ship', nn.BCEWithLogitsLoss(), 1.0)]
         self.epochs = 10
         self.callbacks_config = callbacks_config
         self.callbacks = callbacks_ship_no_ship(self.callbacks_config)
@@ -246,7 +242,7 @@ class BinaryModel(SegmentationModel):
         self._initialize_model_weights = lambda: None
 
     def set_loss(self):
-        self.loss_function = [('ship_no_ship', nn.BCEWithLogitsLoss(), 1.0)]
+        self.loss_function = [('ship_no_ship', nn.CrossEntropyLoss(), 1.0)]
 
     def freeze_weights(self):
         pass
@@ -325,7 +321,7 @@ def callbacks_network(callbacks_config):
     return cbk.CallbackList(
         callbacks=[experiment_timing, training_monitor, validation_monitor,
                    model_checkpoints, neptune_monitor, early_stopping,
-                   lr_scheduler,  #init_lr_finder,
+                   lr_scheduler,  # init_lr_finder,
                    ])
 
 
@@ -333,5 +329,8 @@ def callbacks_ship_no_ship(callbacks_config):
     training_monitor = cbk.TrainingMonitor(**callbacks_config['training_monitor'])
     validation_monitor = cbk.SNS_ValidationMonitor()
     model_checkpoints = cbk.ModelCheckpoint(**callbacks_config['model_checkpoint'])
+    one_cycle_callback = cbk.OneCycleCallback(**callbacks_config['one_cycle_scheduler'])
 
-    return cbk.CallbackList([training_monitor, validation_monitor, model_checkpoints])
+    return cbk.CallbackList([training_monitor, validation_monitor, model_checkpoints,
+                             # one_cycle_callback
+                             ])

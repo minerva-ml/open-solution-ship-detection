@@ -571,7 +571,7 @@ class OneClassImageClassificationDataset(Dataset):
             imgs = [x[0] for x in batch]
             labels = [int(x[1]) for x in batch]
             imgs = [self.image_transform(img) for img in imgs]
-            return torch.stack(imgs), torch.FloatTensor(labels)
+            return torch.stack(imgs), torch.LongTensor(labels)
 
         else:
             imgs = [self.image_transform(img) for img in batch]
@@ -617,14 +617,14 @@ class OneClassImageClassificatioLoader(BaseTransformer):
                                             shuffle=True)
             dataset = self.dataset(X, y,
                                    train_mode=True,
-                                   fixed_resize=self.dataset_params.h,
+                                   fixed_resize=self.dataset_params.sns_h,
                                    image_transform=self.image_transform)
 
             datagen = DataLoader(dataset, collate_fn=dataset.collate_fn, **loader_params, sampler=sampler)
         else:
             dataset = self.dataset(X, y,
                                    train_mode=False,
-                                   fixed_resize=self.dataset_params.h,
+                                   fixed_resize=self.dataset_params.sns_h,
                                    image_transform=self.image_transform)
             datagen = DataLoader(dataset, collate_fn=dataset.collate_fn, **loader_params)
 
