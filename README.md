@@ -28,6 +28,7 @@ In this open source solution you will find references to the [neptune.ml](https:
 |[solution 2](https://app.neptune.ml/neptune-ml/Ships?namedFilterId=8ad61fcb-f0ac-4aaf-aa9c-9db47e0aa222)|0.661|0.679|
 |[solution 3](https://app.neptune.ml/neptune-ml/Ships?namedFilterId=be842434-7c8b-4ab9-afa5-f9c00816d3c3)|0.694|0.696|
 |[solution 4](https://app.neptune.ml/neptune-ml/Ships?namedFilterId=e43c10b9-6a3d-4f0b-80e7-8d74eb86ff62)|0.722|0.703|
+|[solution 5](https://app.neptune.ml/neptune-ml/Ships/experiments/ac8cdaf2-c372-46e9-9045-b17c43af41a6)|0.719|0.725|
 
 ## Start experimenting with ready-to-use code
 You can jump start your participation in the competition by using our starter pack. Installation instruction below will guide you through the setup.
