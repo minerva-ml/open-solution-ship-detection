@@ -6,30 +6,28 @@ from toolkit.utils import reseed
 from common_blocks.utils.misc import get_crop_pad_sequence
 
 affine_seq = iaa.Sequential([
-    # General
-    iaa.SomeOf((1, 2),
-               [iaa.Fliplr(0.5),
-                iaa.Flipud(0.5),
-                ]),
-    # Deformations
+    iaa.Fliplr(0.5),
+    iaa.Flipud(0.5),
+    iaa.Sometimes(0.5, iaa.CropAndPad(percent=(0.0, 1.0), pad_mode='wrap'))
 ], random_order=True)
 
 intensity_seq = iaa.Sequential([
+    iaa.Noop(),
+    iaa.Sometimes(0.3, iaa.ContrastNormalization((0.5, 1.5))),
     iaa.OneOf([
         iaa.Noop(),
-        iaa.Sequential([
-            iaa.OneOf([
-                iaa.Add((-30, 30)),
-                iaa.AddElementwise((-30, 30)),
-                iaa.Multiply((0.9, 1.1)),
-                iaa.MultiplyElementwise((0.9, 1.1)),
-            ]),
+        iaa.OneOf([
+            iaa.Add((-10, 10)),
+            iaa.AddElementwise((-10, 10)),
+            iaa.Multiply((0.95, 1.05)),
+            iaa.MultiplyElementwise((0.95, 1.05)),
         ]),
+        iaa.GaussianBlur(sigma=(0.0, 3.0)),
     ])
 ], random_order=False)
 
 tta_intensity_seq = iaa.Sequential([
-    iaa.Noop()
+    iaa.Sometimes(0.3, iaa.ContrastNormalization((0.5, 1.5)))
 ], random_order=False)
 
 
@@ -111,6 +109,11 @@ def test_time_augmentation_transform(image, tta_parameters):
     if tta_parameters['lr_flip']:
         image = np.fliplr(image)
     image = rotate(image, tta_parameters['rotation'])
+
+    if tta_parameters['color_shift']:
+        tta_intensity = reseed(tta_intensity_seq, deterministic=False)
+        image = tta_intensity.augment_image(image)
+
     return image
 
 

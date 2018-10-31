@@ -38,15 +38,23 @@ class Conv2dBnRelu(nn.Module):
 
 
 class DeconvConv2dBnRelu(nn.Module):
-    def __init__(self, in_channels, out_channels, use_relu=True, use_batch_norm=True):
+    def __init__(self, in_channels, out_channels, use_relu=True, use_batch_norm=True,
+                 use_channel_se=False, use_spatial_se=False, reduction=16):
         super().__init__()
         self.use_relu = use_relu
         self.use_batch_norm = use_batch_norm
+        self.use_channel_se = use_channel_se
+        self.use_spatial_se = use_spatial_se
 
         self.batch_norm = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU(inplace=True)
         self.deconv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=3,
                                          stride=2, padding=1, output_padding=1)
+
+        if use_channel_se:
+            self.channel_se = ChannelSELayer(out_channels, reduction=reduction)
+        if use_spatial_se:
+            self.spatial_se = SpatialSELayer(out_channels)
 
     def forward(self, x):
         x = self.deconv(x)
@@ -54,6 +62,15 @@ class DeconvConv2dBnRelu(nn.Module):
             x = self.batch_norm(x)
         if self.use_relu:
             x = self.relu(x)
+
+        if self.use_channel_se and self.use_spatial_se:
+            channel_se = self.channel_se(x)
+            spatial_se = self.spatial_se(x)
+            x = channel_se + spatial_se
+        elif self.use_channel_se:
+            x = self.channel_se(x)
+        elif self.use_spatial_se:
+            x = self.spatial_se(x)
         return x
 
 

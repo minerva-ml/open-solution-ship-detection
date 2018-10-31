@@ -1,4 +1,3 @@
-from itertools import product
 import multiprocessing as mp
 
 import logging
@@ -16,7 +15,7 @@ import torch
 import matplotlib.pyplot as plt
 from attrdict import AttrDict
 from tqdm import tqdm
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GroupShuffleSplit
 from steppy.base import Step, BaseTransformer
 from steppy.utils import get_logger as get_steppy_logger
 import yaml
@@ -173,6 +172,36 @@ def train_test_split_with_empty_fraction(df, empty_fraction, test_size, shuffle=
     valid = pd.concat([valid_empty, valid_non_empty], axis=0)
 
     return train, valid
+
+
+def train_test_split_with_empty_fraction_with_groups(df,
+                                                     groups,
+                                                     empty_fraction,
+                                                     test_size,
+                                                     shuffle=True, random_state=1234):
+    cv = GroupShuffleSplit(n_splits=2, test_size=test_size, random_state=random_state)
+
+    for train_inds, test_inds in cv.split(df.values, groups=groups.values):
+        train, test = df.iloc[train_inds], df.iloc[test_inds]
+        break
+
+    empty_train, empty_test = train[train['is_not_empty'] == 0], test[test['is_not_empty'] == 0]
+    non_empty_train, non_empty_test = train[train['is_not_empty'] == 1], test[test['is_not_empty'] == 1]
+
+    test_empty_size = int(test_size * empty_fraction)
+    test_non_empty_size = int(test_size * (1.0 - empty_fraction))
+
+    empty_test = empty_test.sample(test_empty_size, random_state=random_state)
+    non_empty_test = non_empty_test.sample(test_non_empty_size, random_state=random_state)
+
+    train = pd.concat([empty_train, non_empty_train], axis=0).sample(frac=1, random_state=random_state)
+    test = pd.concat([empty_test, non_empty_test], axis=0)
+
+    if shuffle:
+        train = train.sample(frac=1, random_state=random_state)
+        test = test.sample(frac=1, random_state=random_state)
+
+    return train, test
 
 
 def sigmoid(x):

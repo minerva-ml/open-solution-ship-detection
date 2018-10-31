@@ -12,7 +12,7 @@ class LargeKernelMatters(nn.Module):
     """
 
     def __init__(self, encoder, num_classes, kernel_size=9, internal_channels=21, use_relu=False, pool0=False,
-                 dropout_2d=0.0):
+                 use_channel_se=False, use_spatial_se=False, reduction_se=4, dropout_2d=0.0):
         super().__init__()
 
         self.dropout_2d = dropout_2d
@@ -69,12 +69,21 @@ class LargeKernelMatters(nn.Module):
                                           out_channels=internal_channels,
                                           kernel_size=3)
 
-        self.deconv5 = DeconvConv2dBnRelu(in_channels=internal_channels, out_channels=internal_channels)
-        self.deconv4 = DeconvConv2dBnRelu(in_channels=internal_channels, out_channels=internal_channels)
-        self.deconv3 = DeconvConv2dBnRelu(in_channels=internal_channels, out_channels=internal_channels)
-        self.deconv2 = DeconvConv2dBnRelu(in_channels=internal_channels, out_channels=internal_channels)
-
-        self.deconv1 = DeconvConv2dBnRelu(in_channels=internal_channels, out_channels=internal_channels)
+        self.deconv5 = DeconvConv2dBnRelu(in_channels=internal_channels, out_channels=internal_channels,
+                                          use_channel_se=use_channel_se, use_spatial_se=use_spatial_se,
+                                          reduction=reduction_se)
+        self.deconv4 = DeconvConv2dBnRelu(in_channels=internal_channels, out_channels=internal_channels,
+                                          use_channel_se=use_channel_se, use_spatial_se=use_spatial_se,
+                                          reduction=reduction_se)
+        self.deconv3 = DeconvConv2dBnRelu(in_channels=internal_channels, out_channels=internal_channels,
+                                          use_channel_se=use_channel_se, use_spatial_se=use_spatial_se,
+                                          reduction=reduction_se)
+        self.deconv2 = DeconvConv2dBnRelu(in_channels=internal_channels, out_channels=internal_channels,
+                                          use_channel_se=use_channel_se, use_spatial_se=use_spatial_se,
+                                          reduction=reduction_se)
+        self.deconv1 = DeconvConv2dBnRelu(in_channels=internal_channels, out_channels=internal_channels,
+                                          use_channel_se=use_channel_se, use_spatial_se=use_spatial_se,
+                                          reduction=reduction_se)
         self.dec_br0_1 = BoundaryRefinement(in_channels=internal_channels,
                                             out_channels=internal_channels,
                                             kernel_size=3)

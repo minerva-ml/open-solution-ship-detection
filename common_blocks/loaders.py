@@ -396,18 +396,22 @@ class MetaTestTimeAugmentationGenerator(BaseTransformer):
         return {'X_tta': X_tta, 'tta_params': tta_params, 'img_ids': img_ids}
 
     def _get_tta_data(self, i, row):
-        original_specs = {'ud_flip': False, 'lr_flip': False, 'rotation': 0}
+        original_specs = {'ud_flip': False, 'lr_flip': False, 'rotation': 0, 'color_shift': False}
         tta_specs = [original_specs]
 
         ud_options = [True, False] if self.tta_transformations.flip_ud else [False]
         lr_options = [True, False] if self.tta_transformations.flip_lr else [False]
         rot_options = [0, 90, 180, 270] if self.tta_transformations.rotation else [0]
+        if self.tta_transformations.color_shift_runs:
+            color_shift_options = list(range(1, self.tta_transformations.color_shift_runs + 1, 1))
+        else:
+            color_shift_options = [False]
 
-        for ud, lr, rot in product(ud_options, lr_options, rot_options):
-            if ud is False and lr is False and rot == 0 is False:
+        for ud, lr, rot, color in product(ud_options, lr_options, rot_options, color_shift_options):
+            if ud is False and lr is False and rot == 0 and color is False:
                 continue
             else:
-                tta_specs.append({'ud_flip': ud, 'lr_flip': lr, 'rotation': rot})
+                tta_specs.append({'ud_flip': ud, 'lr_flip': lr, 'rotation': rot, 'color_shift': color})
 
         img_ids = [i] * len(tta_specs)
         X_rows = [row] * len(tta_specs)
@@ -429,18 +433,22 @@ class TestTimeAugmentationGenerator(BaseTransformer):
         return {'X_tta': [X_tta], 'tta_params': tta_params, 'img_ids': img_ids}
 
     def _get_tta_data(self, i, row):
-        original_specs = {'ud_flip': False, 'lr_flip': False, 'rotation': 0}
+        original_specs = {'ud_flip': False, 'lr_flip': False, 'rotation': 0, 'color_shift': False}
         tta_specs = [original_specs]
 
         ud_options = [True, False] if self.tta_transformations.flip_ud else [False]
         lr_options = [True, False] if self.tta_transformations.flip_lr else [False]
         rot_options = [0, 90, 180, 270] if self.tta_transformations.rotation else [0]
+        if self.tta_transformations.color_shift_runs:
+            color_shift_options = list(range(1, self.tta_transformations.color_shift_runs + 1, 1))
+        else:
+            color_shift_options = [False]
 
-        for ud, lr, rot in product(ud_options, lr_options, rot_options):
-            if ud is False and lr is False and rot == 0 is False:
+        for ud, lr, rot, color in product(ud_options, lr_options, rot_options, color_shift_options):
+            if ud is False and lr is False and rot == 0 and color is False:
                 continue
             else:
-                tta_specs.append({'ud_flip': ud, 'lr_flip': lr, 'rotation': rot})
+                tta_specs.append({'ud_flip': ud, 'lr_flip': lr, 'rotation': rot, 'color_shift': color})
 
         img_ids = [i] * len(tta_specs)
         X_rows = [row] * len(tta_specs)

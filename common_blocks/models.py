@@ -6,7 +6,7 @@ import torch.optim as optim
 from toolkit.pytorch_transformers.models import Model
 from torch.autograd import Variable
 
-from common_blocks.architectures.classification import  Densenet
+from common_blocks.architectures.classification import Densenet
 from common_blocks.utils.misc import get_list_of_image_predictions, sigmoid, softmax
 from .architectures import encoders, unet, large_kernel_matters, pspnet
 from . import callbacks as cbk
@@ -35,7 +35,9 @@ ARCHITECTURES = {'UNet': {'model': unet.UNet,
                                            }},
                  'LargeKernelMatters': {'model': large_kernel_matters.LargeKernelMatters,
                                         'model_config': {'kernel_size': 9, 'internal_channels': 21,
-                                                         'dropout_2d': 0.0, 'use_relu': True, 'pool0': True
+                                                         'dropout_2d': 0.0, 'use_relu': False, 'pool0': True,
+                                                         'use_channel_se': True, 'use_spatial_se': True,
+                                                         'reduction_se': 4
                                                          },
                                         },
                  'PSPNet': {'model': pspnet.PSPNet,
@@ -57,8 +59,8 @@ class SegmentationModel(Model):
         self.set_model()
         self.set_loss()
         self.weight_regularization = weight_regularization
-        self.optimizer = optim.Adam(self.weight_regularization(self.model, **architecture_config['regularizer_params']),
-                                    **architecture_config['optimizer_params'])
+        self.optimizer = optim.SGD(self.weight_regularization(self.model, **architecture_config['regularizer_params']),
+                                   **architecture_config['optimizer_params'])
         self.callbacks = callbacks_network(self.callbacks_config)
 
     def fit(self, datagen, validation_datagen=None, meta_valid=None):
@@ -179,7 +181,8 @@ class SegmentationModel(Model):
             raise NotImplementedError('No softmax loss defined')
         elif self.activation_func == 'sigmoid':
 
-            loss_function = weighted_sum_loss
+            loss_function = focal_lovasz
+            # loss_function = weighted_sum_loss
             # loss_function = nn.BCEWithLogitsLoss()
             # loss_function = DiceWithLogitsLoss()
             # loss_function = lovasz_loss
@@ -292,6 +295,12 @@ def weighted_sum_loss(output, target):
     return bce + 0.25 * dice
 
 
+def focal_lovasz(output, target):
+    focal = FocalWithLogitsLoss(alpha=1.0, gamma=2.0)(output, target)
+    lovasz = lovasz_loss(output, target)
+    return focal + lovasz
+
+
 def lovasz_loss(output, target):
     target = target.long()
     return lovasz_hinge(output, target)
@@ -317,11 +326,15 @@ def callbacks_network(callbacks_config):
     neptune_monitor = cbk.NeptuneMonitor(**callbacks_config['neptune_monitor'])
     early_stopping = cbk.EarlyStopping(**callbacks_config['early_stopping'])
     init_lr_finder = cbk.InitialLearningRateFinder()
+    one_cycle_callback = cbk.OneCycleCallback(**callbacks_config['one_cycle_scheduler'])
 
     return cbk.CallbackList(
         callbacks=[experiment_timing, training_monitor, validation_monitor,
-                   model_checkpoints, neptune_monitor, early_stopping,
-                   lr_scheduler,  # init_lr_finder,
+                   model_checkpoints, neptune_monitor,
+                   one_cycle_callback,
+                   # early_stopping,
+                   # lr_scheduler,
+                   # init_lr_finder,
                    ])
 
 

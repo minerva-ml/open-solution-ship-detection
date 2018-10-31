@@ -27,12 +27,16 @@ LOGGER = misc.init_logger()
 #   \______| \______/  |__| \__| |__|     |__|  \______| |_______/
 #
 
-EXPERIMENT_DIR = '/output/experiment'
-CLONE_EXPERIMENT_DIR_FROM = ''  # When running eval in the cloud specify this as for example /input/SHIP-14/output/experiment
+EXPERIMENT_DIR = os.environ.get('EXPERIMENT_DIR', None)
+
+if EXPERIMENT_DIR is None:
+    raise ValueError("Please set the experiment directory: export EXPERIMENT_DIR=/path/to/desired/place")
+
+CLONE_EXPERIMENT_DIR_FROM = ''  # When running eval in the cloud specify this as for example /input/SAL-14/output/experiment
 OVERWRITE_EXPERIMENT_DIR = False
 
 DEV_MODE = False
-USE_TTA = False
+USE_TTA = True
 INFERENCE_WITH_SHIP_NO_SHIP = True
 
 if OVERWRITE_EXPERIMENT_DIR and os.path.isdir(EXPERIMENT_DIR):
@@ -49,9 +53,11 @@ else:
 
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
-CHUNK_SIZE = 1000
+CHUNK_SIZE_SHIP_NO_SHIP = 2500
+CHUNK_SIZE_SEGMENTATION = 2500
 SEED = 1234
 ID_COLUMN = 'id'
+ID_BIG_IMAGE = 'BigImageId'
 IS_NOT_EMPTY_COLUMN = 'is_not_empty'
 X_COLUMN = 'file_path_image'
 Y_COLUMN = 'file_path_mask'
@@ -255,7 +261,8 @@ CONFIG = AttrDict({
     },
     'tta_generator': {'flip_ud': True,
                       'flip_lr': True,
-                      'rotation': True},
+                      'rotation': True,
+                      'color_shift_runs': False},
     'tta_aggregator': {'tta_inverse_transform': aug.test_time_augmentation_inverse_transform,
                        'method': PARAMS.tta_aggregation_method,
                        'nthreads': PARAMS.num_threads
@@ -285,7 +292,6 @@ def ship_no_ship_pipeline(config, suffix='_ship_no_ship', train_mode=True):
     sns_network = misc.FineTuneStep(name='ship_no_ship_network',
                                     transformer=models.BinaryModel(**config.model['ship_no_ship_network']),
                                     input_steps=[preprocessing],
-
                                     )
 
     sns_network.set_mode_train()
@@ -440,10 +446,14 @@ def train_ship_no_ship():
     meta = pd.read_csv(PARAMS.metadata_filepath)
     meta_train = meta[meta['is_train'] == 1]
 
-    meta_train_split, meta_valid_split = misc.train_test_split_with_empty_fraction(meta_train,
-                                                                                   empty_fraction=PARAMS.evaluation_empty_fraction,
-                                                                                   test_size=PARAMS.evaluation_size,
-                                                                                   shuffle=True, random_state=SEED)
+    meta_train = add_big_image_id(meta_train)
+    meta_train_split, meta_valid_split = misc.train_test_split_with_empty_fraction_with_groups(meta_train,
+                                                                                               groups=meta_train[
+                                                                                                   ID_BIG_IMAGE],
+                                                                                               empty_fraction=PARAMS.evaluation_empty_fraction,
+                                                                                               test_size=PARAMS.evaluation_size,
+                                                                                               shuffle=True,
+                                                                                               random_state=SEED)
 
     meta_train_split = meta_train_split.sample(frac=1, random_state=SEED)
     meta_valid_split = meta_valid_split.sample(frac=1, random_state=SEED)
@@ -466,10 +476,14 @@ def train():
     meta = pd.read_csv(PARAMS.metadata_filepath)
     meta_train = meta[meta['is_train'] == 1]
 
-    meta_train_split, meta_valid_split = misc.train_test_split_with_empty_fraction(meta_train,
-                                                                                   empty_fraction=PARAMS.evaluation_empty_fraction,
-                                                                                   test_size=PARAMS.evaluation_size,
-                                                                                   shuffle=True, random_state=SEED)
+    meta_train = add_big_image_id(meta_train)
+    meta_train_split, meta_valid_split = misc.train_test_split_with_empty_fraction_with_groups(meta_train,
+                                                                                               groups=meta_train[
+                                                                                                   ID_BIG_IMAGE],
+                                                                                               empty_fraction=PARAMS.evaluation_empty_fraction,
+                                                                                               test_size=PARAMS.evaluation_size,
+                                                                                               shuffle=True,
+                                                                                               random_state=SEED)
 
     meta_valid_split = meta_valid_split[meta_valid_split[IS_NOT_EMPTY_COLUMN] == 1].sample(
         PARAMS.in_train_evaluation_size, random_state=SEED)
@@ -492,25 +506,32 @@ def evaluate():
     meta = pd.read_csv(PARAMS.metadata_filepath)
     meta_train = meta[meta['is_train'] == 1]
 
-    _, meta_valid_split = misc.train_test_split_with_empty_fraction(meta_train,
-                                                                    empty_fraction=PARAMS.evaluation_empty_fraction,
-                                                                    test_size=PARAMS.evaluation_size,
-                                                                    shuffle=True, random_state=SEED)
+    meta_train = add_big_image_id(meta_train)
+    _, meta_valid_split = misc.train_test_split_with_empty_fraction_with_groups(meta_train,
+                                                                                groups=meta_train[ID_BIG_IMAGE],
+                                                                                empty_fraction=PARAMS.evaluation_empty_fraction,
+                                                                                test_size=PARAMS.evaluation_size,
+                                                                                shuffle=True, random_state=SEED)
 
     if DEV_MODE:
-        meta_valid_split = meta_valid_split.sample(PARAMS.dev_mode_size, random_state=SEED)
+        _, meta_valid_split = misc.train_test_split_with_empty_fraction_with_groups(meta_valid_split,
+                                                                                    groups=meta_valid_split[
+                                                                                        ID_BIG_IMAGE],
+                                                                                    empty_fraction=PARAMS.evaluation_empty_fraction,
+                                                                                    test_size=PARAMS.evaluation_size,
+                                                                                    shuffle=True, random_state=SEED)
 
     segm_pipe = inference_segmentation_pipeline(config=CONFIG)
     valid_ids = meta_valid_split[ID_COLUMN] + '.jpg'
 
     if INFERENCE_WITH_SHIP_NO_SHIP:
         sns_pipe = ship_no_ship_pipeline(config=CONFIG, train_mode=False)
-        ids_ship, ids_no_ship = predict_ship_no_ship(meta_valid_split, sns_pipe, CHUNK_SIZE)
+        ids_ship, ids_no_ship = predict_ship_no_ship(meta_valid_split, sns_pipe, CHUNK_SIZE_SHIP_NO_SHIP)
         meta_valid_ship = meta_valid_split[valid_ids.isin(ids_ship)]
-        prediction_ship = generate_submission(meta_valid_ship, segm_pipe, CHUNK_SIZE)
+        prediction_ship = generate_submission(meta_valid_ship, segm_pipe, CHUNK_SIZE_SEGMENTATION)
         prediction = misc.combine_two_stage_predictions(ids_no_ship, prediction_ship, valid_ids)
     else:
-        prediction = generate_submission(meta_valid_split, segm_pipe, CHUNK_SIZE)
+        prediction = generate_submission(meta_valid_split, segm_pipe, CHUNK_SIZE_SEGMENTATION)
 
     gt = io.read_gt_subset(PARAMS.annotation_file, valid_ids)
     f2_per_image, image_ids = metrics.f_beta_metric(gt, prediction, beta=2, apply_mean=False)
@@ -536,12 +557,12 @@ def predict():
 
     if INFERENCE_WITH_SHIP_NO_SHIP:
         sns_pipe = ship_no_ship_pipeline(config=CONFIG, train_mode=False)
-        ids_ship, ids_no_ship = predict_ship_no_ship(meta_test, sns_pipe, CHUNK_SIZE)
+        ids_ship, ids_no_ship = predict_ship_no_ship(meta_test, sns_pipe, CHUNK_SIZE_SHIP_NO_SHIP)
         meta_test_ship = meta_test[test_ids.isin(ids_ship)]
-        prediction_ship = generate_submission(meta_test_ship, segm_pipe, CHUNK_SIZE)
+        prediction_ship = generate_submission(meta_test_ship, segm_pipe, CHUNK_SIZE_SEGMENTATION)
         submission = misc.combine_two_stage_predictions(ids_no_ship, prediction_ship, test_ids)
     else:
-        submission = generate_submission(meta_test, segm_pipe, CHUNK_SIZE)
+        submission = generate_submission(meta_test, segm_pipe, CHUNK_SIZE_SEGMENTATION)
 
     submission_filepath = os.path.join(EXPERIMENT_DIR, 'submission.csv')
 
@@ -557,6 +578,13 @@ def predict():
 #  |  `--'  |     |  |     |  | |  `----.----)   |
 #   \______/      |__|     |__| |_______|_______/
 #
+
+def add_big_image_id(meta):
+    big_image_ids = pd.read_csv('big-images-ids_v2.csv')
+    meta['ImageId'] = meta[ID_COLUMN] + '.jpg'
+    meta_joined = pd.merge(meta, big_image_ids, on='ImageId')
+    return meta_joined
+
 
 def generate_submission(meta_data, pipeline, chunk_size):
     if chunk_size is not None:

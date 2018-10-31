@@ -26,6 +26,7 @@ logger = get_logger()
 Y_COLUMN = 'file_path_mask'
 ORIGINAL_SIZE = (768, 768)
 THRESHOLD = 0.5
+NUM_THREADS = 300
 
 
 class Callback:
@@ -668,7 +669,8 @@ class ModelCheckpoint(Callback):
 
 
 class OneCycleCallback(Callback):
-    def __init__(self, number_of_batches_per_full_cycle, max_lr,enabled=1, momentum_range=(0.95, 0.8), prcnt_annihilate=10,
+    def __init__(self, number_of_batches_per_full_cycle, max_lr, enabled=1, momentum_range=(0.95, 0.8),
+                 prcnt_annihilate=10,
                  div=10):
         super().__init__()
 
@@ -746,7 +748,8 @@ def postprocessing_pipeline_simplified(cache_dirpath, loader_mode):
     mask_resize = Step(name='mask_resize',
                        transformer=make_apply_transformer(size_adjustment_function,
                                                           output_name='resized_images',
-                                                          apply_on=['images']),
+                                                          apply_on=['images'],
+                                                          n_threads=NUM_THREADS),
                        input_data=['network_output'],
                        adapter=Adapter({'images': E('network_output', 'mask_prediction'),
                                         }))
@@ -755,7 +758,8 @@ def postprocessing_pipeline_simplified(cache_dirpath, loader_mode):
                      transformer=make_apply_transformer(
                          partial(binarize, threshold=THRESHOLD),
                          output_name='binarized_images',
-                         apply_on=['images']),
+                         apply_on=['images'],
+                         n_threads=NUM_THREADS),
                      input_steps=[mask_resize],
                      adapter=Adapter({'images': E(mask_resize.name, 'resized_images'),
                                       }))
@@ -764,7 +768,8 @@ def postprocessing_pipeline_simplified(cache_dirpath, loader_mode):
                    transformer=make_apply_transformer(
                        label,
                        output_name='labeled_images',
-                       apply_on=['images']),
+                       apply_on=['images'],
+                       n_threads=NUM_THREADS),
                    input_steps=[binarizer],
                    adapter=Adapter({'images': E(binarizer.name, 'binarized_images'),
                                     }))
