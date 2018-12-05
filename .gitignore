@@ -1,5 +1,6 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+*__pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache
@@ -115,3 +116,5 @@ ENV/
 # Working directories
 examples/cache/
 neptune_local.yaml
+common_blocks/neptune.yaml
+common_blocks/neptune_home.yaml

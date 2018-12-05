@@ -24,11 +24,11 @@ In this open source solution you will find references to the [neptune.ml](https:
 
 | link to code | CV | LB |
 |:---:|:---:|:---:|
-|[solution 1](https://app.neptune.ml/neptune-ml/Ships?namedFilterId=1bc4da1e-6e47-4a26-a50e-3e55cbc052a7)|0.541|0.573|
-|[solution 2](https://app.neptune.ml/neptune-ml/Ships?namedFilterId=8ad61fcb-f0ac-4aaf-aa9c-9db47e0aa222)|0.661|0.679|
-|[solution 3](https://app.neptune.ml/neptune-ml/Ships?namedFilterId=be842434-7c8b-4ab9-afa5-f9c00816d3c3)|0.694|0.696|
-|[solution 4](https://app.neptune.ml/neptune-ml/Ships?namedFilterId=e43c10b9-6a3d-4f0b-80e7-8d74eb86ff62)|0.722|0.703|
-|[solution 5](https://app.neptune.ml/neptune-ml/Ships/experiments/ac8cdaf2-c372-46e9-9045-b17c43af41a6)|0.719|0.725|
+|solution 1|0.541|0.573|
+|solution 2|0.661|0.679|
+|solution 3|0.694|0.696|
+|solution 4|0.722|0.703|
+|solution 5|0.711|0.716|
 
 ## Start experimenting with ready-to-use code
 You can jump start your participation in the competition by using our starter pack. Installation instruction below will guide you through the setup.

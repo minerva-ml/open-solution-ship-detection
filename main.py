@@ -27,8 +27,12 @@ LOGGER = misc.init_logger()
 #   \______| \______/  |__| \__| |__|     |__|  \______| |_______/
 #
 
-EXPERIMENT_DIR = '/output/experiment'
-CLONE_EXPERIMENT_DIR_FROM = ''  # When running eval in the cloud specify this as for example /input/SHIP-14/output/experiment
+EXPERIMENT_DIR = os.environ.get('EXPERIMENT_DIR', None)
+
+if EXPERIMENT_DIR is None:
+    raise ValueError("Please set the experiment directory: export EXPERIMENT_DIR=/path/to/desired/place")
+
+CLONE_EXPERIMENT_DIR_FROM = ''  # When running eval in the cloud specify this as for example /input/SAL-14/output/experiment
 OVERWRITE_EXPERIMENT_DIR = False
 
 DEV_MODE = False
