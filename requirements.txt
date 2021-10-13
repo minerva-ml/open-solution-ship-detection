@@ -2,7 +2,7 @@ tqdm==4.23.0
 pandas==0.22.0
 imageio==2.2.0
 pydot_ng==1.0.0
-opencv_python==3.4.0.12
+opencv_python==4.2.0.32
 torch==0.3.1
 attrdict==2.0.0
 scipy==1.0.0
