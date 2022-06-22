@@ -7,7 +7,7 @@ torch==0.3.1
 attrdict==2.0.0
 scipy==1.0.0
 scikit_image==0.13.1
-numpy==1.21.0
+numpy==1.22.0
 imgaug==0.2.5
 neptune-cli
 ipython==7.16.3
